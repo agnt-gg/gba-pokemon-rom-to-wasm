@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>gba-recomp — ARM7TDMI in your browser</title>
+<style>
+  :root {
+    --bg: #0c0c14;
+    --panel: #14141f;
+    --panel-2: #1b1b2b;
+    --ink: #e7e7f0;
+    --muted: #8b8ba3;
+    --line: #262638;
+    --accent: #12e0ff;
+    --accent-2: #7d3de5;
+    --green: #19ef83;
+    --pink: #e53d8f;
+    --gold: #ffd700;
+    --radius: 16px;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background:
+      radial-gradient(900px 500px at 15% -10%, rgba(125,61,229,.18), transparent 60%),
+      radial-gradient(900px 600px at 110% 10%, rgba(18,224,255,.12), transparent 55%),
+      var(--bg);
+    color: var(--ink); font-family: var(--sans);
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100%; padding: 32px 16px 64px;
+  }
+  header { width: 100%; max-width: 880px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  .brand { display: flex; align-items: baseline; gap: 12px; }
+  .brand h1 { font-size: 22px; letter-spacing: -0.02em; margin: 0; font-weight: 700; }
+  .brand .dot { color: var(--accent); }
+  .brand small { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .pill { font-family: var(--mono); font-size: 11px; color: var(--green); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; background: var(--panel); }
+
+  .stage {
+    width: 100%; max-width: 880px;
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 24px; box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  }
+  .screen-wrap {
+    position: relative; display: grid; place-items: center;
+    background: #000; border-radius: 12px; overflow: hidden;
+    border: 1px solid #000; aspect-ratio: 240 / 160; width: 100%;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.04), inset 0 0 80px rgba(18,224,255,.05);
+  }
+  canvas#screen { width: 100%; height: 100%; image-rendering: pixelated; display: block; }
+  .scanlines { position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.0) 0px, rgba(0,0,0,.0) 2px, rgba(0,0,0,.10) 3px); mix-blend-mode: multiply; opacity: .5; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 18px; }
+  .toolbar .spacer { flex: 1; }
+  label.file {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    background: linear-gradient(180deg, var(--accent), #0bb6d6); color: #04222a; font-weight: 700;
+    padding: 10px 16px; border-radius: 10px; font-size: 14px; border: none;
+  }
+  label.file input { display: none; }
+  button.ctl {
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    padding: 10px 14px; border-radius: 10px; font-size: 14px; cursor: pointer; font-weight: 600;
+    transition: border-color .15s, transform .05s;
+  }
+  button.ctl:hover { border-color: var(--accent); }
+  button.ctl:active { transform: translateY(1px); }
+  select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); padding: 9px 10px; border-radius: 10px; font-size: 14px; }
+  .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .status #status { color: var(--green); }
+  .status #fps { color: var(--accent); margin-left: 10px; }
+
+  /* On-screen gamepad */
+  .pad { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; align-items: center; margin-top: 22px; }
+  .dpad { display: grid; grid-template-columns: repeat(3, 44px); grid-template-rows: repeat(3, 44px); gap: 4px; justify-content: center; }
+  .dpad .k { grid-column: auto; }
+  .dpad .up { grid-area: 1 / 2; } .dpad .left { grid-area: 2 / 1; } .dpad .mid { grid-area: 2 / 2; } .dpad .right { grid-area: 2 / 3; } .dpad .down { grid-area: 3 / 2; }
+  .center-btns { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .ab { display: flex; gap: 18px; align-items: center; justify-content: center; }
+  .k {
+    -webkit-user-select: none; user-select: none; touch-action: none;
+    display: grid; place-items: center; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--ink); border-radius: 12px; font-weight: 700; font-size: 14px; cursor: pointer;
+    transition: background .1s, transform .05s, border-color .1s; min-width: 44px; min-height: 44px;
+  }
+  .k.active, .k:active { background: var(--accent); color: #04222a; border-color: var(--accent); transform: scale(.96); }
+  .k.round { border-radius: 999px; width: 58px; height: 58px; }
+  .k.a { background: linear-gradient(180deg,#2a1340,#1b1b2b); }
+  .k.b { background: linear-gradient(180deg,#3a1030,#1b1b2b); }
+  .k.startsel { font-size: 11px; padding: 8px 14px; border-radius: 999px; min-height: 34px; }
+
+  .hint { margin: 28px auto 0; max-width: 880px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .hint code { font-family: var(--mono); color: var(--accent); background: var(--panel); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); }
+  .keymap { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 8px; }
+  .keymap span { color: var(--ink); } .keymap b { color: var(--gold); font-family: var(--mono); }
+  footer { margin-top: 40px; color: var(--muted); font-size: 12px; text-align: center; max-width: 760px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>gba<span class="dot">·</span>recomp</h1>
+      <small>ARM7TDMI · runtime · no BIOS</small>
+    </div>
+    <div class="pill">● live</div>
+  </header>
+
+  <main class="stage">
+    <div class="screen-wrap">
+      <canvas id="screen" width="240" height="160"></canvas>
+      <div class="scanlines"></div>
+    </div>
+
+    <div class="toolbar">
+      <label class="file">
+        <input id="rom" type="file" accept=".gba,.bin" />
+        ▸ Load ROM
+      </label>
+      <button class="ctl" id="btn-pause">⏯ Pause</button>
+      <button class="ctl" id="btn-reset">⟲ Reset</button>
+      <button class="ctl" id="btn-audio">🔇 Audio Off</button>
+      <button class="ctl" id="btn-clear-save">Clear Save</button>
+      <button class="ctl" id="btn-export-save">Export Save</button>
+      <button class="ctl" id="btn-shot">⧉ Screenshot</button>
+      <select id="speed" title="Emulation speed">
+        <option value="0.5">0.5×</option>
+        <option value="1" selected>1×</option>
+        <option value="2">2×</option>
+        <option value="4">4×</option>
+      </select>
+      <span class="spacer"></span>
+      <span class="status"><span id="status">Drop a .gba ROM to begin</span><span id="fps"></span><span id="save-status" style="margin-left:10px;color:var(--green)">Flash: 0 bytes written · dirty=no</span></span>
+    </div>
+
+    <div class="pad">
+      <div class="dpad">
+        <div class="k up"    data-key="6">▲</div>
+        <div class="k left"  data-key="5">◀</div>
+        <div class="k mid"   style="opacity:.25;pointer-events:none">●</div>
+        <div class="k right" data-key="4">▶</div>
+        <div class="k down"  data-key="7">▼</div>
+      </div>
+      <div class="center-btns">
+        <div class="k startsel" data-key="3">START</div>
+        <div class="k startsel" data-key="2">SELECT</div>
+        <div style="display:flex;gap:10px">
+          <div class="k startsel" data-key="9">L</div>
+          <div class="k startsel" data-key="8">R</div>
+        </div>
+      </div>
+      <div class="ab">
+        <div class="k round b" data-key="1">B</div>
+        <div class="k round a" data-key="0">A</div>
+      </div>
+    </div>
+  </main>
+
+  <section class="hint">
+    Your ROM stays in your browser — it is never uploaded. Supply your own legally-owned cartridge dump.
+    <div class="keymap">
+      <span><b>Z</b> A</span><span><b>X</b> B</span><span><b>Enter</b> Start</span>
+      <span><b>Shift</b> Select</span><span><b>A</b> L</span><span><b>S</b> R</span>
+      <span><b>Arrows</b> D-Pad</span><span><b>Space</b> Pause</span>
+    </div>
+  </section>
+
+  <footer>
+    gba-recomp — a from-scratch GBA runtime: ARM7TDMI core (full jsmolka conformance), HLE BIOS,
+    PPU, DMA, timers, interrupts, Flash saves. Built to bring Pokémon Ruby/Sapphire/Emerald to the browser.
+  </footer>
+
+  <script type="module" src="./js/gba.js?v=20260606-irqlrthumbfix"></script>
+</body>
+</html>

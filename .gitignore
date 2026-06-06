@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+
+# Build artifacts and generated files
+build/*.ppm
+build/*.png
+build/*.wav
+tools/*.png
+tools/*.ppm
+tools/*.wav
+build/*.wasm
+build/*.wat
+*.map
+
+# Copyrighted ROMs and saves must never be committed.
+# We lift from public ARM7TDMI/GBATEK conventions, NOT from user ROM bytes.
+*.gba
+*.gb
+*.gbc
+*.sav
+*.sgm
+*.ss*
+*.state
+build/*.gba
+build/*.gb
+
+# EXCEPTION: jsmolka/gba-tests conformance ROMs are MIT-licensed (not commercial ROMs),
+# so we keep them committed to make the CPU suite reproducible.
+!build/arm.gba
+!build/thumb.gba
+
+# Browser/profile/user-state extraction scratch
+brave-live-ruby.sav
+extracted-brave-*.sav
+tmp-brave-leveldb/
+agent/browser-*.mjs
+agent/extract-save-browser.mjs
+agent/extract-save-level*.ts
+agent/repro-from-live-save.ts
+
+# Investigation scratch scripts that are useful locally but not part of the public package
+agent/catch-ewram-jump.ts
+agent/continue-save-probe.ts
+agent/decode-caller-final.ts
+agent/disasm-crash-callee.ts
+agent/trace-callee-calls.ts
+
+# Logs / scratch
+*.log
+err.txt
+server.log
+tmp_*
+*_tmp.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

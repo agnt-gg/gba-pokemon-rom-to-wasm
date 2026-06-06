@@ -1,0 +1,19 @@
+{
+  "name": "gba-pokemon-rom-to-wasm",
+  "version": "0.1.0",
+  "description": "Game Boy Advance Pokemon Ruby/Sapphire ROM-to-browser runtime: ARM7TDMI machine-code execution, BIOS HLE, GBA hardware model, and browser host for user-supplied ROMs.",
+  "type": "module",
+  "private": false,
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/",
+    "test:cpu": "node --experimental-strip-types tests/arm_core.test.ts",
+    "serve": "node --experimental-strip-types tools/serve.ts --port 8077",
+    "build:web": "esbuild src/browser/main.ts --bundle --format=esm --outfile=web/js/gba.js --target=es2022",
+    "watch:web": "esbuild src/browser/main.ts --bundle --format=esm --outfile=web/js/gba.js --target=es2022 --watch",
+    "capture": "node --experimental-strip-types tools/capture.ts"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
+}

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>From Pokémon Ruby/Sapphire ROM Bytes to the Browser · gba-recomp Research Note</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+<style>
+*{scrollbar-width:none}*{box-sizing:border-box}html{scroll-behavior:smooth}:root{--bg:#07090d;--bg2:#0d1118;--panel:rgba(18,22,31,.82);--panel2:rgba(255,255,255,.055);--ink:#f5f1e8;--muted:#a6acb8;--line:rgba(255,255,255,.13);--pink:#e53d8f;--cyan:#12e0ff;--green:#19ef83;--gold:#ffd23b;--red:#ff5a5a;--violet:#8d6cff;--code:#0b0f16;--sans:'Space Grotesk',system-ui,sans-serif;--serif:'Fraunces',Georgia,serif;--mono:'JetBrains Mono',ui-monospace,monospace}body{margin:0;color:var(--ink);font-family:var(--sans);line-height:1.65;background:radial-gradient(900px 600px at 80% -10%,rgba(229,61,143,.18),transparent 60%),radial-gradient(760px 520px at 7% 18%,rgba(18,224,255,.13),transparent 60%),linear-gradient(180deg,#07090d,#0d1118 45%,#07090d);overflow-x:hidden}body:before{content:"";position:fixed;inset:0;z-index:-1;opacity:.06;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='130' height='130'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}.wrap{display:grid;grid-template-columns:300px minmax(0,1fr);gap:32px;max-width:1480px;margin:auto;padding:32px 32px 96px}.toc{position:sticky;top:24px;height:calc(100vh - 48px);overflow:auto;border:1px solid var(--line);border-radius:24px;background:rgba(10,12,18,.72);backdrop-filter:blur(18px);padding:18px;box-shadow:0 30px 90px rgba(0,0,0,.45)}.brand{display:flex;gap:12px;align-items:center;margin-bottom:18px}.mark{width:42px;height:42px;border-radius:14px;background:conic-gradient(from 210deg,var(--pink),var(--cyan),var(--green),var(--gold),var(--pink));box-shadow:0 0 28px rgba(18,224,255,.26)}.brand b{display:block;line-height:1.05}.brand small{font-family:var(--mono);font-size:10px;color:var(--muted)}nav{display:grid;gap:4px}nav a{font-family:var(--mono);font-size:12px;color:var(--muted);text-decoration:none;padding:9px 10px;border-radius:10px;border:1px solid transparent}nav a:hover{color:var(--ink);background:rgba(255,255,255,.055);border-color:var(--line)}.side-note{margin-top:18px;border:1px solid var(--line);border-radius:16px;background:rgba(255,255,255,.04);padding:14px;font-size:12px;color:var(--muted)}main{min-width:0}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:32px;background:linear-gradient(135deg,rgba(229,61,143,.20),rgba(18,224,255,.10) 42%,rgba(25,239,131,.08)),rgba(255,255,255,.035);padding:54px;box-shadow:0 40px 140px rgba(0,0,0,.46)}.hero:after{content:"08000000 → ARM7TDMI → MMIO → FRAME";position:absolute;right:-80px;bottom:28px;font-family:var(--mono);font-size:46px;font-weight:700;letter-spacing:-.08em;color:rgba(255,255,255,.045);transform:rotate(-7deg)}.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;color:var(--green);font-weight:700}.hero h1{font-family:var(--serif);font-size:clamp(52px,8vw,112px);letter-spacing:-.07em;line-height:.88;margin:18px 0 22px}.subtitle{font-size:22px;color:#dfe4ea;max-width:930px}.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.pill{font-family:var(--mono);font-size:12px;color:var(--ink);border:1px solid var(--line);border-radius:999px;padding:7px 10px;background:rgba(255,255,255,.055)}section{margin-top:34px;border:1px solid var(--line);border-radius:28px;background:var(--panel);padding:32px;box-shadow:0 22px 80px rgba(0,0,0,.28)}h2{font-family:var(--serif);font-size:42px;line-height:1;letter-spacing:-.05em;margin:0 0 18px}h3{font-size:23px;letter-spacing:-.025em;margin:28px 0 10px;color:#fff}p{color:#dce1e6;font-size:17px;margin:12px 0}.lede{font-size:20px;color:#eef3f7}code,pre{font-family:var(--mono)}pre{overflow:auto;background:var(--code);border:1px solid rgba(255,255,255,.11);border-radius:18px;padding:18px;color:#e7edf3;font-size:12.5px;line-height:1.55}.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:14px;margin:18px 0}.card{grid-column:span 4;border:1px solid var(--line);border-radius:20px;background:rgba(255,255,255,.045);padding:18px}.card.wide{grid-column:span 8}.card.full{grid-column:1/-1}.metric{font-family:var(--mono);font-size:31px;line-height:1;color:var(--green);font-weight:700}.label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-top:8px}.diagram{font-family:var(--mono);white-space:pre;overflow:auto;border:1px solid var(--line);border-radius:20px;background:#080c12;color:#dfffea;padding:20px;font-size:12px;line-height:1.5}.callout{border:1px solid rgba(25,239,131,.35);background:linear-gradient(135deg,rgba(25,239,131,.12),rgba(18,224,255,.05));border-radius:18px;padding:18px;margin:18px 0}.callout.warn{border-color:rgba(255,90,90,.42);background:rgba(255,90,90,.08)}.callout.gold{border-color:rgba(255,210,59,.44);background:rgba(255,210,59,.08)}table{width:100%;border-collapse:collapse;margin:18px 0;border:1px solid var(--line);border-radius:18px;overflow:hidden}th,td{padding:12px 13px;border-bottom:1px solid var(--line);vertical-align:top;text-align:left}th{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:var(--green);background:rgba(255,255,255,.045)}td{font-size:15px;color:#e3e7ed}.timeline{counter-reset:t}.event{position:relative;margin:12px 0;padding:16px 16px 16px 56px;border:1px solid var(--line);border-radius:18px;background:rgba(255,255,255,.04)}.event:before{counter-increment:t;content:counter(t);position:absolute;left:16px;top:16px;width:28px;height:28px;border-radius:10px;display:grid;place-items:center;font-family:var(--mono);font-weight:700;color:#06110a;background:var(--green)}.twocol{columns:2 320px;column-gap:28px}.small{font-size:13px;color:var(--muted)}.ok{color:var(--green)}.bad{color:var(--red)}.mono{font-family:var(--mono)}@media(max-width:980px){.wrap{display:block;padding:16px}.toc{position:relative;height:auto;margin-bottom:18px}.hero{padding:30px}.card,.card.wide{grid-column:1/-1}section{padding:22px}.hero h1{font-size:52px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside class="toc">
+    <div class="brand"><div class="mark"></div><div><b>gba-recomp</b><small>Ruby/Sapphire technical note</small></div></div>
+    <nav>
+      <a href="#premise">00 · Premise</a><a href="#map">01 · Cartridge + map</a><a href="#cpu">02 · CPU contract</a><a href="#lifting">03 · ROM execution model</a><a href="#bios">04 · BIOS HLE</a><a href="#ppu">05 · PPU / DMA / timing</a><a href="#saves">06 · Flash + RTC</a><a href="#browser">07 · Browser host</a><a href="#autonomy">08 · Autonomous instrumentation</a><a href="#failure">09 · Failure archaeology</a><a href="#irq">10 · IRQ return fix</a><a href="#validation">11 · Validation matrix</a><a href="#future">12 · WASM path</a>
+    </nav>
+    <div class="side-note">This document intentionally avoids academic posturing. It is an engineering field note: what was built, why it works, what broke, how it was proven.</div>
+  </aside>
+  <main>
+    <header class="hero">
+      <div class="kicker">Research note · AGNT autonomous build system · 2026-06-06</div>
+      <h1>From Pokémon Ruby/Sapphire ROM bytes to a live browser GBA</h1>
+      <p class="subtitle">An implementation-level account of the GBA recompilation/runtime pipeline: cartridge parsing, ARM7TDMI execution, BIOS replacement, scanline hardware, Flash/RTC persistence, browser hosting, and the autonomous debugging machinery that turned opaque game resets into measurable CPU invariants.</p>
+      <div class="meta"><span class="pill">AXVE / AXPE</span><span class="pill">ARM7TDMI</span><span class="pill">THUMB + ARM</span><span class="pill">BIOS SWI HLE</span><span class="pill">PPU scanlines</span><span class="pill">DMA / Timers / IRQ</span><span class="pill">Flash 128K</span><span class="pill">RTC GPIO</span><span class="pill">WASM-ready core</span></div>
+    </header>
+
+    <section id="premise">
+      <h2>00 · Premise</h2>
+      <p class="lede">A GBA Pokémon ROM is not “a game file” in the way a web application is a bundle. It is machine code plus data designed to run against a very specific handheld computer: an ARM7TDMI CPU, a BIOS, memory-mapped video hardware, DMA engines, timers, audio FIFOs, keypad input, Flash save chips, and serial/GPIO devices such as the real-time clock.</p>
+      <p>The project’s job is to present an unmodified retail Ruby/Sapphire ROM with a convincing machine. The browser is only the outer shell. The core problem is architectural fidelity: the ROM must observe the same register side effects, interrupt return semantics, memory aliasing, scanline cadence, save-chip behavior, and BIOS helper results it expects from the original GBA.</p>
+      <div class="grid"><div class="card"><div class="metric">16 MiB</div><div class="label">Retail Ruby/Sapphire ROM size</div></div><div class="card"><div class="metric">280,896</div><div class="label">Cycles per GBA frame approximation</div></div><div class="card"><div class="metric">0x08000000</div><div class="label">GamePak ROM execution base</div></div></div>
+      <div class="diagram">ROM bytes
+  ├─ Nintendo header: title, game code, entrypoint, checksum
+  ├─ ARM code, THUMB code, literal pools, jump tables
+  ├─ compressed tiles/maps/palettes/sprites/scripts
+  └─ save type strings / Flash command assumptions
+        │
+        ▼
+GBA runtime contract
+  CPU + bus + BIOS HLE + PPU + DMA + timers + IRQ + Flash + RTC
+        │
+        ▼
+Browser host
+  canvas pixels, keyboard/touch, AudioContext, localStorage save persistence</div>
+    </section>
+
+    <section id="map">
+      <h2>01 · Cartridge identity and memory map</h2>
+      <p>Ruby and Sapphire identify as <code>AXVE</code> and <code>AXPE</code>. That identity is not cosmetic: it selects save behavior, RTC handling, boot workarounds, and browser persistence namespaces. The runtime maps the ROM at the cartridge address window and routes every CPU load/store through a bus that knows the GBA memory layout.</p>
+      <table><tr><th>Region</th><th>Address range</th><th>Function</th><th>Implementation consequence</th></tr><tr><td>BIOS</td><td><code>00000000-00003FFF</code></td><td>Nintendo boot/SWI/IRQ code</td><td>Not shipped. Replaced with documented HLE for SWIs and an HLE IRQ dispatcher.</td></tr><tr><td>EWRAM</td><td><code>02000000-0203FFFF</code></td><td>256 KiB external RAM</td><td>Save blocks, script state, task structures, OAM mirrors, affine buffers, transition tables.</td></tr><tr><td>IWRAM</td><td><code>03000000-03007FFF</code></td><td>32 KiB fast internal RAM</td><td>Pokémon copies IRQ handlers and hot routines here; banked SPs live here after BIOS init.</td></tr><tr><td>I/O</td><td><code>04000000-040003FF</code></td><td>MMIO registers</td><td>PPU, DMA, timers, keypad, sound, IE/IF/IME, waitstate control, serial/GPIO.</td></tr><tr><td>Palette / VRAM / OAM</td><td><code>05000000 / 06000000 / 07000000</code></td><td>Graphics memory</td><td>Requires halfword/word behavior, scanline rendering, tile and sprite interpretation.</td></tr><tr><td>GamePak ROM</td><td><code>08000000+</code></td><td>Executable cartridge space</td><td>ARM/THUMB opcodes, data tables, literal pools; reads from the retail ROM bytes.</td></tr><tr><td>Backup</td><td><code>0E000000+</code></td><td>SRAM/Flash/EEPROM window</td><td>Ruby/Sapphire use Flash command protocols and two rotating save slots.</td></tr></table>
+    </section>
+
+    <section id="cpu">
+      <h2>02 · ARM7TDMI as the contract surface</h2>
+      <p>The CPU core is the center of the system. The ROM alternates between ARM and THUMB state, uses banked exception modes, depends on pipeline-visible PC behavior, and expects exact flag semantics. A single wrong offset in <code>r15</code> or <code>LR_irq</code> can boot for minutes and then destroy a transition scene.</p>
+      <h3>State modeled</h3>
+      <div class="twocol"><p><b>Registers.</b> <code>r0-r15</code>, CPSR, SPSR for exception modes, banked SP/LR for SVC/IRQ, system/user register sharing.</p><p><b>ARM classes.</b> Data processing, immediate/register shifts, multiply, long multiply, branch/BX, load/store, halfword/signed transfers, block transfers, SWI.</p><p><b>THUMB classes.</b> Shift/add/sub, immediates, ALU ops, high-register ops/BX, PC-relative loads, SP-relative loads, push/pop, block transfers, conditional branches, SWI, BL pairs.</p><p><b>Quirks.</b> Empty register lists, base-in-list writeback, PC reads, STR PC values, banked LR/SPSR interactions.</p></div>
+      <pre><code>// IRQ delivery now uses one rule for ARM and THUMB:
+// r15 already points at the next instruction when poll() runs.
+// BIOS-style return lands at LR_irq - 4.
+const retAddr = (st.r[15] + 4) >>> 0;</code></pre>
+      <div class="callout gold">The most expensive bugs were not broad missing features. They were one-instruction contract errors: a THUMB IRQ return offset, an LDM writeback quirk, a BIOS IntrWait flag-clearing detail. Pokémon is an excellent hardware test because it combines copied IWRAM routines, nested IRQs, SWIs, DMA, and save-state machines.</div>
+    </section>
+
+    <section id="lifting">
+      <h2>03 · ROM execution model and the path to WASM</h2>
+      <p>The current core executes the ROM dynamically through an interpreter. The ROM-to-WASM framing is still accurate because the architectural separation is the same one used by a static or hybrid recompiler: decode guest instructions into a host-level intermediate form, preserve all guest-visible side effects, and route hardware interaction through imports.</p>
+      <div class="diagram">Static/hybrid recompilation shape
+
+ROM block discovery
+  ├─ entrypoint from header
+  ├─ direct branch/BL targets
+  ├─ interrupt handler entrypoints copied to IWRAM
+  ├─ switch/jump tables and literal pools
+  └─ dynamic fallback for unresolved indirect branches
+
+Lowering
+  ARM/THUMB opcode → IR/basic block → WASM function
+
+Host imports
+  load8/load16/load32, store8/store16/store32,
+  request_irq, dma_step, ppu_step, timer_step, bios_swi,
+  read_keyinput, flash_command, rtc_gpio</div>
+      <p>The GBA version is harder than a single Game Boy ROM because the CPU has two instruction sets, multiple exception modes, a much denser MMIO surface, DMA channels that can run at HBlank/VBlank, and games that copy executable routines into IWRAM. Any full static compiler needs a dynamic escape hatch for indirect branches and RAM-resident routines.</p>
+    </section>
+
+    <section id="bios">
+      <h2>04 · BIOS replacement: SWI HLE</h2>
+      <p>The project does not ship Nintendo BIOS code. Instead, documented BIOS functions are implemented as high-level handlers. This is enough because Pokémon mostly depends on deterministic services: waits, copies, decompression, affine math, and reset behavior.</p>
+      <table><tr><th>SWI</th><th>Name</th><th>Why Pokémon cares</th></tr><tr><td><code>00h</code></td><td>SoftReset</td><td>Reset behavior and crash diagnostic hook.</td></tr><tr><td><code>04h/05h</code></td><td>IntrWait / VBlankIntrWait</td><td>Main-loop pacing. Must interact correctly with BIOS-IF at <code>0x03007FF8</code>.</td></tr><tr><td><code>06h-08h</code></td><td>Div / DivArm / Sqrt</td><td>Gameplay and transform math.</td></tr><tr><td><code>0Bh/0Ch</code></td><td>CpuSet / CpuFastSet</td><td>Bulk fills/copies to EWRAM, VRAM, OAM mirrors, transition buffers.</td></tr><tr><td><code>0Eh/0Fh</code></td><td>BgAffineSet / ObjAffineSet</td><td>Matrix generation for rotating/scaling backgrounds and sprites.</td></tr><tr><td><code>11h-15h</code></td><td>LZ77 / Huffman / RLE</td><td>Graphics and map asset decompression.</td></tr></table>
+      <p>Two BIOS details were decisive: <code>IntrWait</code> must not repeatedly discard the same old flags after being rewound, and BIOS-IF must be updated by the IRQ dispatch path rather than polluted speculatively by every HBlank request.</p>
+    </section>
+
+    <section id="ppu">
+      <h2>05 · PPU, DMA, scanline timing</h2>
+      <p>Ruby/Sapphire do not merely draw frames. They schedule effects around scanline phases. HBlank IRQs and HBlank DMA are active in trainer-card, battle, and transition scenes. The runtime therefore advances hardware in scanline-sized phases rather than pretending graphics are a single end-of-frame operation.</p>
+      <div class="diagram">One frame, approximated
+
+228 scanlines × 1232 cycles
+  visible lines 0..159
+    HDraw: background/sprite preparation
+    HBlank: render scanline, optional HBlank IRQ, HBlank DMA
+  line 160
+    enter VBlank, request VBlank IRQ, VBlank DMA, latch framebuffer
+  lines 160..227
+    game runs post-frame tasks, copies OAM/palette/tile data, services audio/timers</div>
+      <p>The PPU implements enough tiled background, sprite, palette, window, and blend behavior for Ruby to boot and render. DMA integrates with the same timing model so transfers happen at the same phase the ROM expects.</p>
+    </section>
+
+    <section id="saves">
+      <h2>06 · Flash saves and RTC</h2>
+      <p>Ruby/Sapphire use Flash backup, with sector erase/program commands and rotating save sectors. The browser persists the Flash array into localStorage using versioned keys. The save model must tolerate partial-sector updates and only flush at safe times; synchronous browser stalls in the middle of a Flash polling loop can become gameplay-visible.</p>
+      <p>The RTC path matters because Ruby/Sapphire/Emerald use a GPIO-connected real-time clock. If the RTC/status path is absent or stale, the game can hang in boot/menu state machines or show the internal-battery warning. The runtime includes RTC HLE sufficient to report a sane battery/status/date-time path for the Gen 3 boot checks.</p>
+    </section>
+
+    <section id="browser">
+      <h2>07 · Browser host</h2>
+      <p>The browser wrapper is deliberately thin. It uploads the ROM locally, constructs <code>GbaMachine</code>, repeatedly calls <code>runFrame()</code>, copies the framebuffer into a canvas, maps keyboard/touch into GBA KEYINPUT bits, drains audio samples into an AudioContext sink, and persists Flash data.</p>
+      <table><tr><th>Host feature</th><th>Guest-visible behavior</th></tr><tr><td>Canvas</td><td>Receives 240×160 framebuffer data generated by the PPU.</td></tr><tr><td>Keyboard/touch</td><td>Mapped to active-low KEYINPUT bits.</td></tr><tr><td>AudioContext</td><td>Consumes FIFO/timer-generated PCM samples.</td></tr><tr><td>localStorage</td><td>Stores 128 KiB Flash save blobs per game code/title.</td></tr><tr><td>Cache-busted bundle</td><td>Prevents stale emulator code after rebuilds.</td></tr></table>
+    </section>
+
+    <section id="autonomy">
+      <h2>08 · Autonomous instrumentation</h2>
+      <p>The system was made debuggable by agents that run the emulator without a browser and convert visual/player complaints into CPU facts. These agents inspect memory, drive deterministic input, force IRQ stress, trap SoftReset, and summarize liveness.</p>
+      <div class="grid"><div class="card wide"><h3>State-aware input</h3><p>Agents can tap/hold GBA buttons, run exact frame counts, snapshot PC/IE/IF/DISPCNT, calculate framebuffer signatures, and identify whether a screen is static-but-alive or genuinely wedged.</p></div><div class="card"><h3>SoftReset postmortem</h3><p>Every reset captures PC, LR, frame, recent SWIs, caller code, IE/IF, DISPCNT, and Flash dirty state.</p></div><div class="card"><h3>HBlank pressure tests</h3><p>Dedicated scripts keep HBlank IRQ pressure high for hundreds/thousands of frames and fail on garbage SWIs or SoftReset.</p></div><div class="card full"><h3>RAM-diff strategy</h3><p>For gameplay state, the agent compares RAM snapshots across controlled movements and interactions. Candidate addresses are accepted only if they change with the expected input and revert with opposite input. This is how a black-box ROM becomes a measurable state machine.</p></div></div>
+    </section>
+
+    <section id="failure">
+      <h2>09 · Failure archaeology</h2>
+      <p>The hardest part of the project was not writing the happy path; it was refusing to accept plausible explanations. Several hypotheses explained part of the symptom and were then falsified by better diagnostics.</p>
+      <div class="timeline"><div class="event"><b>White-screen boot.</b> CPU conformance passed but Ruby did not progress. The issue was a BIOS IntrWait/VBlankIntrWait handshake that re-cleared BIOS-IF on every re-entry.</div><div class="event"><b>RTC/save gate.</b> Ruby advanced to a state where an async RTC/save task stayed busy. GPIO RTC HLE unblocked the boot path.</div><div class="event"><b>Trainer-card / encounter reset.</b> Live logs showed <code>IE=0x3</code>, <code>IF=0x2</code>, <code>DISPCNT=0x7f60</code>, then execution from <code>0x020200xx</code> data.</div><div class="event"><b>False roots removed.</b> CpuSet overrun, ObjAffineSet stride, SoftReset flag logic, speculative BIOS-IF, and nested sentinel bugs were investigated. Some were improved; none fully matched the final repeated fingerprint.</div><div class="event"><b>Final invariant.</b> HBlank interrupts were returning THUMB code to the interrupted halfword. Under repeated HBlank pressure, this corrupts control flow until data is executed as code.</div></div>
+      <pre><code>Representative live fingerprint
+
+SoftReset from pc=0x020200d0
+lr=0x0806065d
+IE=0x3, IF=0x2, DISPCNT=0x7f60
+recent SWIs:
+  VBlankIntrWait, CpuSet, ObjAffineSet, ObjAffineSet, ...
+  0xc0 @ 0x0202006c   // garbage SWI from EWRAM data
+  0x00 @ 0x020200d0   // SoftReset</code></pre>
+    </section>
+
+    <section id="irq">
+      <h2>10 · IRQ return correction</h2>
+      <p>IRQ exception entry stores a return address in <code>LR_irq</code>. The BIOS-style return subtracts four. In this interpreter, IRQ delivery happens after an instruction has completed and <code>r15</code> already points at the next guest instruction. Therefore the stored IRQ LR must be <code>next + 4</code> for both ARM and THUMB.</p>
+      <div class="diagram">Old THUMB IRQ path
+  r15 = next
+  LR_irq = next + 2
+  return PC = LR_irq - 4 = next - 2   ← re-executes interrupted halfword
+
+Correct path
+  r15 = next
+  LR_irq = next + 4
+  return PC = LR_irq - 4 = next       ← resumes exactly after interrupted instruction</div>
+      <p>The regression <code>irq_thumb_lr.test.ts</code> constructs a tiny CPU/IO/IRQ environment, delivers an IRQ from THUMB state, captures banked <code>LR_irq</code>, performs the BIOS-style return, and asserts the PC lands on the next THUMB instruction.</p>
+      <div class="callout"><b>Current build:</b> <code>20260606-irqlrthumbfix</code>. The fix is committed as <code>f5709c4 fix(gba): correct IRQ LR for THUMB HBlank interrupts</code>.</div>
+    </section>
+
+    <section id="validation">
+      <h2>11 · Validation matrix</h2>
+      <table><tr><th>Validation</th><th>Coverage</th><th>Result</th></tr><tr><td><code>arm_core.test.ts</code></td><td>Instruction-level CPU checks</td><td class="ok">27 passed, 0 failed</td></tr><tr><td><code>boot_ruby.test.ts</code></td><td>Ruby boot and machine progress</td><td class="ok">6 passed, 0 failed</td></tr><tr><td><code>frames_ruby.test.ts</code></td><td>Frame loop / PPU / timing health</td><td class="ok">5 passed, 0 failed</td></tr><tr><td><code>irq_wake.test.ts</code></td><td>IntrWait wake and IRQ dispatch</td><td class="ok">2 passed, 0 failed</td></tr><tr><td><code>irq_thumb_lr.test.ts</code></td><td>THUMB IRQ return offset regression</td><td class="ok">1 passed, 0 failed</td></tr><tr><td><code>verify-nested-forced.ts</code></td><td>1500-frame HBlank IRQ storm</td><td class="ok">SoftResets=0, garbage SWIs=0, framesAlive=1500/1500</td></tr><tr><td><code>verify-nested-irq.ts</code></td><td>PPU-driven HBlank stress</td><td class="ok">SoftResets=0, garbage SWIs=0</td></tr><tr><td><code>flash_* / ruby_flash_sector</code></td><td>Flash save behavior</td><td class="ok">sector/program tests pass</td></tr><tr><td><code>rtc_boot_stable.test.ts</code></td><td>RTC boot/menu stability</td><td class="ok">3 passed, 0 failed</td></tr></table>
+    </section>
+
+    <section id="future">
+      <h2>12 · WASM path forward</h2>
+      <p>The runtime is already organized around the same boundary a WASM compiler needs: guest instruction semantics in one layer, hardware side effects behind bus/MMIO functions, and host presentation outside the core. A full static/hybrid pipeline would add block discovery, IR lowering, code cache generation, and dynamic fallback for RAM-resident or indirect targets.</p>
+      <div class="diagram">Future compiler division
+
+compile-time
+  decode ARM/THUMB blocks
+  recover direct CFG
+  lower to WASM functions
+  emit host imports for bus/hardware
+
+run-time
+  execute compiled blocks
+  dispatch unresolved indirect branches to interpreter/compiler fallback
+  preserve cycle accounting and MMIO ordering
+  call PPU/DMA/timer/audio/IRQ step functions</div>
+      <p>The lesson from Ruby/Sapphire is that the compiler is the easy part only after the machine contract is real. The autonomous system brought that contract into view by forcing every mysterious crash to become a register trace, a memory address, a timing phase, and finally a regression.</p>
+    </section>
+  </main>
+</div>
+</body>
+</html>
