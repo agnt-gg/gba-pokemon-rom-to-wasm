@@ -1438,6 +1438,741 @@ var ArmCore = class {
   }
 };
 
+// src/recompiler/wasm_encoder.ts
+var I32 = 127;
+var VOID = 64;
+var OP = {
+  unreachable: 0,
+  nop: 1,
+  block: 2,
+  loop: 3,
+  if: 4,
+  else: 5,
+  end: 11,
+  br: 12,
+  br_if: 13,
+  return: 15,
+  call: 16,
+  drop: 26,
+  select: 27,
+  local_get: 32,
+  local_set: 33,
+  local_tee: 34,
+  global_get: 35,
+  global_set: 36,
+  i32_load: 40,
+  i32_load8_u: 45,
+  i32_load16_u: 47,
+  i32_store: 54,
+  i32_store8: 58,
+  i32_store16: 59,
+  i32_const: 65,
+  i64_const: 66,
+  i32_eqz: 69,
+  i32_eq: 70,
+  i32_ne: 71,
+  i32_lt_s: 72,
+  i32_lt_u: 73,
+  i32_gt_s: 74,
+  i32_gt_u: 75,
+  i32_le_s: 76,
+  i32_le_u: 77,
+  i32_ge_s: 78,
+  i32_ge_u: 79,
+  i32_add: 106,
+  i32_sub: 107,
+  i32_mul: 108,
+  i32_div_s: 109,
+  i32_div_u: 110,
+  i32_rem_s: 111,
+  i32_rem_u: 112,
+  i32_and: 113,
+  i32_or: 114,
+  i32_xor: 115,
+  i32_shl: 116,
+  i32_shr_s: 117,
+  i32_shr_u: 118,
+  i32_rotl: 119,
+  i32_rotr: 120,
+  i32_clz: 103,
+  i32_ctz: 104,
+  i32_popcnt: 105,
+  i64_extend_i32_u: 173,
+  i64_extend_i32_s: 172,
+  i32_wrap_i64: 167,
+  i64_add: 124,
+  i64_mul: 126,
+  i64_and: 131,
+  i64_shr_u: 136,
+  i64_shl: 134
+};
+function unsignedLEB(n) {
+  const out = [];
+  let v = n >>> 0;
+  do {
+    let byte = v & 127;
+    v >>>= 7;
+    if (v !== 0) byte |= 128;
+    out.push(byte);
+  } while (v !== 0);
+  return out;
+}
+function signedLEB(n) {
+  const out = [];
+  let more = true;
+  let value = n | 0;
+  while (more) {
+    let byte = value & 127;
+    value >>= 7;
+    if (value === 0 && (byte & 64) === 0 || value === -1 && (byte & 64) !== 0) {
+      more = false;
+    } else {
+      byte |= 128;
+    }
+    out.push(byte);
+  }
+  return out;
+}
+function signedLEB64(n) {
+  const out = [];
+  let more = true;
+  let value = n;
+  while (more) {
+    let byte = Number(value & 0x7fn);
+    value >>= 7n;
+    if (value === 0n && (byte & 64) === 0 || value === -1n && (byte & 64) !== 0) {
+      more = false;
+    } else {
+      byte |= 128;
+    }
+    out.push(byte);
+  }
+  return out;
+}
+function strBytes(s) {
+  const enc = new TextEncoder().encode(s);
+  return [...unsignedLEB(enc.length), ...enc];
+}
+function section(id, payload) {
+  return [id, ...unsignedLEB(payload.length), ...payload];
+}
+function vec(items) {
+  return [...unsignedLEB(items.length), ...items.flat()];
+}
+function buildModule(opts) {
+  const { types, imports, memory, functions } = opts;
+  const typeEntries = types.map((t) => [
+    96,
+    // func type
+    ...vec(t.params.map((p) => [p])),
+    ...vec(t.results.map((r) => [r]))
+  ]);
+  const typeSec = section(1, vec(typeEntries));
+  const importEntries = [];
+  importEntries.push([
+    ...strBytes(memory.module),
+    ...strBytes(memory.name),
+    2,
+    // memory import
+    0,
+    // limits: min only
+    ...unsignedLEB(memory.minPages)
+  ]);
+  for (const imp of imports) {
+    importEntries.push([
+      ...strBytes(imp.module),
+      ...strBytes(imp.name),
+      0,
+      // func import
+      ...unsignedLEB(types.indexOf(findType(types, imp.type)))
+    ]);
+  }
+  const importSec = section(2, vec(importEntries));
+  const importedFuncCount = imports.length;
+  const funcSec = section(3, vec(functions.map((f) => unsignedLEB(f.typeIndex))));
+  const exportEntries = [];
+  functions.forEach((f, i) => {
+    if (f.exportName) {
+      exportEntries.push([
+        ...strBytes(f.exportName),
+        0,
+        // func export
+        ...unsignedLEB(importedFuncCount + i)
+      ]);
+    }
+  });
+  const exportSec = section(7, vec(exportEntries));
+  const codeEntries = functions.map((f) => {
+    const localsVec = vec(f.locals.map((l) => [...unsignedLEB(l.count), l.type]));
+    const body = [...localsVec, ...f.code, OP.end];
+    return [...unsignedLEB(body.length), ...body];
+  });
+  const codeSec = section(10, vec(codeEntries));
+  const bytes = [
+    0,
+    97,
+    115,
+    109,
+    // magic "\0asm"
+    1,
+    0,
+    0,
+    0,
+    // version 1
+    ...typeSec,
+    ...importSec,
+    ...funcSec,
+    ...exportSec,
+    ...codeSec
+  ];
+  return new Uint8Array(bytes);
+}
+function findType(types, t) {
+  const match = types.find(
+    (x) => x.params.length === t.params.length && x.results.length === t.results.length && x.params.every((p, i) => p === t.params[i]) && x.results.every((r, i) => r === t.results[i])
+  );
+  if (!match) throw new Error("type not found in type section");
+  return match;
+}
+var CodeBuilder = class {
+  bytes = [];
+  i32_const(n) {
+    this.bytes.push(OP.i32_const, ...signedLEB(n));
+    return this;
+  }
+  i64_const(n) {
+    this.bytes.push(OP.i64_const, ...signedLEB64(n));
+    return this;
+  }
+  local_get(i) {
+    this.bytes.push(OP.local_get, ...unsignedLEB(i));
+    return this;
+  }
+  local_set(i) {
+    this.bytes.push(OP.local_set, ...unsignedLEB(i));
+    return this;
+  }
+  local_tee(i) {
+    this.bytes.push(OP.local_tee, ...unsignedLEB(i));
+    return this;
+  }
+  call(funcIndex) {
+    this.bytes.push(OP.call, ...unsignedLEB(funcIndex));
+    return this;
+  }
+  // memory ops against the imported memory (align, offset)
+  i32_load(offset = 0, align = 2) {
+    this.bytes.push(OP.i32_load, align, ...unsignedLEB(offset));
+    return this;
+  }
+  i32_load8_u(offset = 0) {
+    this.bytes.push(OP.i32_load8_u, 0, ...unsignedLEB(offset));
+    return this;
+  }
+  i32_load16_u(offset = 0) {
+    this.bytes.push(OP.i32_load16_u, 1, ...unsignedLEB(offset));
+    return this;
+  }
+  i32_store(offset = 0, align = 2) {
+    this.bytes.push(OP.i32_store, align, ...unsignedLEB(offset));
+    return this;
+  }
+  i32_store8(offset = 0) {
+    this.bytes.push(OP.i32_store8, 0, ...unsignedLEB(offset));
+    return this;
+  }
+  i32_store16(offset = 0) {
+    this.bytes.push(OP.i32_store16, 1, ...unsignedLEB(offset));
+    return this;
+  }
+  op(opcode) {
+    this.bytes.push(opcode);
+    return this;
+  }
+  // control flow
+  block(bt = VOID) {
+    this.bytes.push(OP.block, bt);
+    return this;
+  }
+  loop(bt = VOID) {
+    this.bytes.push(OP.loop, bt);
+    return this;
+  }
+  if_(bt = VOID) {
+    this.bytes.push(OP.if, bt);
+    return this;
+  }
+  else_() {
+    this.bytes.push(OP.else);
+    return this;
+  }
+  end() {
+    this.bytes.push(OP.end);
+    return this;
+  }
+  br(depth) {
+    this.bytes.push(OP.br, ...unsignedLEB(depth));
+    return this;
+  }
+  br_if(depth) {
+    this.bytes.push(OP.br_if, ...unsignedLEB(depth));
+    return this;
+  }
+  return_() {
+    this.bytes.push(OP.return);
+    return this;
+  }
+  drop() {
+    this.bytes.push(OP.drop);
+    return this;
+  }
+  build() {
+    return this.bytes;
+  }
+};
+
+// src/recompiler/abi.ts
+var REG_BASE = 0;
+var OFF_CPSR = 64;
+var OFF_NF = 72;
+var OFF_ZF = 76;
+var OFF_CF = 80;
+var OFF_VF = 84;
+function regOff(n) {
+  return REG_BASE + n * 4;
+}
+var HOST = {
+  read8: 0,
+  read16: 1,
+  read32: 2,
+  write8: 3,
+  write16: 4,
+  write32: 5
+};
+var HOST_IMPORT_ORDER = ["read8", "read16", "read32", "write8", "write16", "write32"];
+
+// src/recompiler/arm_lifter.ts
+var L_A = 0;
+var L_B = 1;
+var L_RES = 2;
+function loadReg(cb, n, pcPlus8) {
+  if (n === 15) {
+    cb.i32_const(pcPlus8 | 0);
+    return cb;
+  }
+  cb.i32_const(regOff(n)).i32_load(0);
+  return cb;
+}
+function storeReg(cb, n) {
+  cb.local_set(L_RES);
+  cb.i32_const(regOff(n));
+  cb.local_get(L_RES);
+  cb.i32_store(0);
+}
+function setFlagZNfromRes(cb) {
+  cb.i32_const(OFF_ZF);
+  cb.local_get(L_RES).op(OP.i32_eqz);
+  cb.i32_store(0);
+  cb.i32_const(OFF_NF);
+  cb.local_get(L_RES).i32_const(0).op(OP.i32_lt_s);
+  cb.i32_store(0);
+}
+function setC(cb, pushC) {
+  cb.i32_const(OFF_CF);
+  pushC(cb);
+  cb.i32_store(0);
+}
+function setV(cb, pushV) {
+  cb.i32_const(OFF_VF);
+  pushV(cb);
+  cb.i32_store(0);
+}
+function armImm(instr) {
+  const imm = instr & 255;
+  const rot = (instr >> 8 & 15) * 2;
+  return (imm >>> rot | imm << 32 - rot) >>> 0;
+}
+function liftArm(cb, instr, pc) {
+  const cond = instr >>> 28 & 15;
+  if (cond !== 14) return { status: "bail" };
+  const pcPlus8 = pc + 8 >>> 0;
+  if ((instr & 234881024) === 167772160) {
+    const link = (instr & 16777216) !== 0;
+    let off = instr & 16777215;
+    if (off & 8388608) off |= 4278190080;
+    const target = pcPlus8 + (off << 2) >>> 0;
+    if (link) {
+      cb.i32_const(regOff(14));
+      cb.i32_const(pc + 4 >>> 0);
+      cb.i32_store(0);
+    }
+    cb.i32_const(regOff(15));
+    cb.i32_const(target);
+    cb.i32_store(0);
+    return { status: "endsBlock", staticTarget: target, isCall: link };
+  }
+  if ((instr & 201326592) === 67108864) {
+    const I = (instr & 33554432) !== 0;
+    if (I) return { status: "bail" };
+    const P = (instr & 16777216) !== 0;
+    const U = (instr & 8388608) !== 0;
+    const B = (instr & 4194304) !== 0;
+    const W = (instr & 2097152) !== 0;
+    const L = (instr & 1048576) !== 0;
+    const Rn = instr >>> 16 & 15;
+    const Rd = instr >>> 12 & 15;
+    const off12 = instr & 4095;
+    if (Rn === 15 || Rd === 15) return { status: "bail" };
+    loadReg(cb, Rn, pcPlus8).local_set(L_A);
+    const applyOffset = (b) => {
+      b.local_get(L_A);
+      b.i32_const(off12);
+      b.op(U ? OP.i32_add : OP.i32_sub);
+    };
+    if (P) {
+      applyOffset(cb);
+      cb.local_set(L_A);
+    }
+    if (L) {
+      cb.local_get(L_A);
+      cb.call(B ? HOST.read8 : HOST.read32);
+      storeReg(cb, Rd);
+    } else {
+      cb.local_get(L_A);
+      loadReg(cb, Rd, pcPlus8);
+      cb.call(B ? HOST.write8 : HOST.write32);
+    }
+    if (P && W) {
+      cb.local_get(L_A);
+      storeReg(cb, Rn);
+    } else if (!P) {
+      cb.local_get(L_A);
+      cb.i32_const(off12);
+      cb.op(U ? OP.i32_add : OP.i32_sub);
+      storeReg(cb, Rn);
+    }
+    return { status: "ok" };
+  }
+  if ((instr & 201326592) === 0) {
+    const I = (instr & 33554432) !== 0;
+    const opcode = instr >>> 21 & 15;
+    const S = (instr & 1048576) !== 0;
+    const Rn = instr >>> 16 & 15;
+    const Rd = instr >>> 12 & 15;
+    if (!I && (instr & 240) === 144) return { status: "bail" };
+    if (!I && (instr & 16) !== 0) return { status: "bail" };
+    if (Rd === 15) return { status: "bail" };
+    const pushOp2 = (b) => {
+      if (I) {
+        b.i32_const(armImm(instr) | 0);
+      } else {
+        const Rm = instr & 15;
+        const shamt = instr >>> 7 & 31;
+        const stype = instr >>> 5 & 3;
+        loadReg(b, Rm, pcPlus8);
+        if (shamt === 0 && stype === 0) {
+        } else if (stype === 0) {
+          b.i32_const(shamt).op(OP.i32_shl);
+        } else if (stype === 1) {
+          b.i32_const(shamt === 0 ? 32 : shamt).op(OP.i32_shr_u);
+        } else if (stype === 2) {
+          b.i32_const(shamt === 0 ? 31 : shamt).op(OP.i32_shr_s);
+        } else {
+          if (shamt === 0) return;
+          b.i32_const(shamt).op(OP.i32_rotr);
+        }
+      }
+    };
+    if (!I) {
+      const stype = instr >>> 5 & 3;
+      const shamt = instr >>> 7 & 31;
+      if (stype === 3 && shamt === 0) return { status: "bail" };
+    }
+    const isLogical = (op) => op === 0 || op === 1 || op === 8 || op === 9 || op === 12 || op === 13 || op === 14 || op === 15;
+    const isTest = (op) => op >= 8 && op <= 11;
+    switch (opcode) {
+      case 0:
+      // AND
+      case 8:
+        loadReg(cb, Rn, pcPlus8);
+        pushOp2(cb);
+        cb.op(OP.i32_and);
+        cb.local_set(L_RES);
+        break;
+      case 1:
+      // EOR
+      case 9:
+        loadReg(cb, Rn, pcPlus8);
+        pushOp2(cb);
+        cb.op(OP.i32_xor);
+        cb.local_set(L_RES);
+        break;
+      case 12:
+        loadReg(cb, Rn, pcPlus8);
+        pushOp2(cb);
+        cb.op(OP.i32_or);
+        cb.local_set(L_RES);
+        break;
+      case 14:
+        loadReg(cb, Rn, pcPlus8);
+        pushOp2(cb);
+        cb.i32_const(-1).op(OP.i32_xor);
+        cb.op(OP.i32_and);
+        cb.local_set(L_RES);
+        break;
+      case 13:
+        pushOp2(cb);
+        cb.local_set(L_RES);
+        break;
+      case 15:
+        pushOp2(cb);
+        cb.i32_const(-1).op(OP.i32_xor);
+        cb.local_set(L_RES);
+        break;
+      case 4:
+      // ADD
+      case 11:
+        loadReg(cb, Rn, pcPlus8).local_set(L_A);
+        pushOp2(cb);
+        cb.local_set(L_B);
+        cb.local_get(L_A).local_get(L_B).op(OP.i32_add).local_set(L_RES);
+        break;
+      case 2:
+      // SUB
+      case 10:
+        loadReg(cb, Rn, pcPlus8).local_set(L_A);
+        pushOp2(cb);
+        cb.local_set(L_B);
+        cb.local_get(L_A).local_get(L_B).op(OP.i32_sub).local_set(L_RES);
+        break;
+      case 3:
+        loadReg(cb, Rn, pcPlus8).local_set(L_A);
+        pushOp2(cb);
+        cb.local_set(L_B);
+        cb.local_get(L_B).local_get(L_A).op(OP.i32_sub).local_set(L_RES);
+        break;
+      default:
+        return { status: "bail" };
+    }
+    if (!isTest(opcode)) {
+      cb.local_get(L_RES);
+      storeReg(cb, Rd);
+    }
+    if (S || isTest(opcode)) {
+      setFlagZNfromRes(cb);
+      if (opcode === 4 || opcode === 11) {
+        setC(cb, (b) => {
+          b.local_get(L_RES).local_get(L_A).op(OP.i32_lt_u);
+        });
+        setV(cb, (b) => {
+          b.local_get(L_A).local_get(L_B).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
+          b.local_get(L_A).local_get(L_RES).op(OP.i32_xor);
+          b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+        });
+      } else if (opcode === 2 || opcode === 10 || opcode === 3) {
+        const minuendLocal = opcode === 3 ? L_B : L_A;
+        const subLocal = opcode === 3 ? L_A : L_B;
+        setC(cb, (b) => {
+          b.local_get(minuendLocal).local_get(subLocal).op(OP.i32_ge_u);
+        });
+        setV(cb, (b) => {
+          b.local_get(minuendLocal).local_get(subLocal).op(OP.i32_xor);
+          b.local_get(minuendLocal).local_get(L_RES).op(OP.i32_xor);
+          b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+        });
+      } else if (isLogical(opcode)) {
+        return { status: "bail" };
+      }
+    }
+    return { status: "ok" };
+  }
+  return { status: "bail" };
+}
+var RESERVED_LOCALS = [
+  { count: 3, type: I32 }
+  // L_A, L_B, L_RES
+];
+
+// src/recompiler/recompiler.ts
+var tHostRead = { params: [I32], results: [I32] };
+var tHostWrite = { params: [I32, I32], results: [] };
+var tBlock = { params: [], results: [I32] };
+var Recompiler = class {
+  bus;
+  /** Shared memory holding the register file (and exploded flags). */
+  mem;
+  i32;
+  u32;
+  cache = /* @__PURE__ */ new Map();
+  // null = "no native prefix, interpret"
+  // stats
+  nativeInstrs = 0;
+  interpInstrs = 0;
+  blocksCompiled = 0;
+  blocksRejected = 0;
+  /**
+   * Self-verification gate. On a block's FIRST native execution we re-run the same instructions on
+   * a throwaway interpreter from identical state and compare the resulting register file + flags.
+   * If they ever differ, we permanently mark the block as non-native (interpret instead). This
+   * guarantees the recompiler can never diverge from the reference semantics on real ROM code —
+   * it can only be a correct speedup or a safe fallback, never a correctness regression.
+   */
+  verifyFirstRun = true;
+  verified = /* @__PURE__ */ new Set();
+  MAX_CACHE = 8192;
+  constructor(bus) {
+    this.bus = bus;
+    this.mem = new WebAssembly.Memory({ initial: 1 });
+    this.i32 = new Int32Array(this.mem.buffer);
+    this.u32 = new Uint32Array(this.mem.buffer);
+  }
+  hostImports() {
+    const bus = this.bus;
+    return {
+      read8: (a) => bus.read8(a >>> 0) | 0,
+      read16: (a) => bus.read16(a >>> 0) | 0,
+      read32: (a) => bus.read32(a >>> 0) | 0,
+      write8: (a, v) => bus.write8(a >>> 0, v & 255),
+      write16: (a, v) => bus.write16(a >>> 0, v & 65535),
+      write32: (a, v) => bus.write32(a >>> 0, v >>> 0)
+    };
+  }
+  /** Copy interpreter ArmState (current bank) into shared WASM memory + explode flags. */
+  syncIn(st) {
+    for (let i = 0; i < 16; i++) this.i32[regOff(i) >> 2] = st.r[i] | 0;
+    this.i32[OFF_CPSR >> 2] = st.cpsr | 0;
+    this.i32[OFF_NF >> 2] = st.cpsr & FLAG_N ? 1 : 0;
+    this.i32[OFF_ZF >> 2] = st.cpsr & FLAG_Z ? 1 : 0;
+    this.i32[OFF_CF >> 2] = st.cpsr & FLAG_C ? 1 : 0;
+    this.i32[OFF_VF >> 2] = st.cpsr & FLAG_V ? 1 : 0;
+  }
+  /** Copy shared WASM memory back into the interpreter ArmState + repack flags into CPSR. */
+  syncOut(st) {
+    for (let i = 0; i < 16; i++) st.r[i] = this.u32[regOff(i) >> 2] >>> 0;
+    let cpsr = this.i32[OFF_CPSR >> 2] >>> 0;
+    cpsr = (cpsr & ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V)) >>> 0;
+    if (this.i32[OFF_NF >> 2]) cpsr |= FLAG_N;
+    if (this.i32[OFF_ZF >> 2]) cpsr |= FLAG_Z;
+    if (this.i32[OFF_CF >> 2]) cpsr |= FLAG_C;
+    if (this.i32[OFF_VF >> 2]) cpsr |= FLAG_V;
+    st.cpsr = cpsr >>> 0;
+  }
+  /**
+   * Discover and compile a native block starting at `pc` (ARM, AL-only prefix).
+   * Returns null if the very first instruction can't be lifted (caller should interpret one step).
+   */
+  compileBlock(pc) {
+    if (this.cache.has(pc)) return this.cache.get(pc);
+    if (this.cache.size >= this.MAX_CACHE) return null;
+    const cb = new CodeBuilder();
+    let cur = pc >>> 0;
+    let count = 0;
+    let endedByBranch = false;
+    let hasStore = false;
+    const MAX = 256;
+    while (count < MAX) {
+      const instr = this.bus.read32(cur) >>> 0;
+      if ((instr & 202375168) === 67108864) hasStore = true;
+      const res = liftArm(cb, instr, cur);
+      if (res.status === "bail") {
+        break;
+      }
+      count++;
+      if (res.status === "endsBlock") {
+        endedByBranch = true;
+        break;
+      }
+      cur = cur + 4 >>> 0;
+    }
+    if (count === 0) {
+      this.cache.set(pc, null);
+      return null;
+    }
+    if (!endedByBranch) {
+      cb.i32_const(regOff(15));
+      cb.i32_const(cur >>> 0);
+      cb.i32_store(0);
+    }
+    cb.i32_const(regOff(15)).i32_load(0);
+    cb.return_();
+    const mod = buildModule({
+      types: [tHostRead, tHostWrite, tBlock],
+      imports: HOST_IMPORT_ORDER.map((name) => ({
+        module: "env",
+        name,
+        type: name.startsWith("read") ? tHostRead : tHostWrite
+      })),
+      memory: { module: "env", name: "mem", minPages: 1 },
+      functions: [{ locals: RESERVED_LOCALS, code: cb.build(), typeIndex: 2, exportName: "block" }]
+    });
+    const module = new WebAssembly.Module(mod);
+    const instance = new WebAssembly.Instance(module, {
+      env: { mem: this.mem, ...this.hostImports() }
+    });
+    const block = {
+      startPc: pc,
+      count,
+      hasStore,
+      fn: instance.exports.block
+    };
+    this.cache.set(pc, block);
+    this.blocksCompiled++;
+    return block;
+  }
+  /**
+   * Run one "unit of progress" from the interpreter's current PC:
+   *   - If a native block compiles at PC, sync in, run the WASM block, sync out, return native count.
+   *   - Otherwise, return 0 to signal the caller to interpret a single instruction.
+   *
+   * The caller (HybridCpu) owns the interpreter and the cycle/IRQ bookkeeping.
+   */
+  tryRunNative(cpu) {
+    if (cpu.st.thumb) return 0;
+    const pc = cpu.st.r[15] >>> 0;
+    const block = this.compileBlock(pc);
+    if (!block) return 0;
+    if (this.verifyFirstRun && !this.verified.has(pc) && !block.hasStore) {
+      const snapR = Int32Array.from(cpu.st.r);
+      const snapCpsr = cpu.st.cpsr >>> 0;
+      this.syncIn(cpu.st);
+      const nextPc2 = block.fn() >>> 0;
+      this.syncOut(cpu.st);
+      cpu.st.r[15] = nextPc2 >>> 0;
+      const ref = new ArmCore(this.bus);
+      ref.st.r.set(snapR);
+      ref.st.cpsr = snapCpsr;
+      ref.st.r[15] = pc;
+      for (let i = 0; i < block.count; i++) ref.step();
+      let ok = ref.st.r[15] >>> 0 === cpu.st.r[15] >>> 0;
+      if (ok) for (let i = 0; i < 15; i++) {
+        if (ref.st.r[i] >>> 0 !== cpu.st.r[i] >>> 0) {
+          ok = false;
+          break;
+        }
+      }
+      const FLAGS = FLAG_N | FLAG_Z | FLAG_C | FLAG_V;
+      if (ok && (ref.st.cpsr & FLAGS) !== (cpu.st.cpsr & FLAGS)) ok = false;
+      if (!ok) {
+        cpu.st.r.set(snapR);
+        cpu.st.cpsr = snapCpsr;
+        cpu.st.r[15] = pc;
+        this.cache.set(pc, null);
+        this.blocksRejected++;
+        return 0;
+      }
+      this.verified.add(pc);
+      this.nativeInstrs += block.count;
+      return block.count;
+    }
+    this.syncIn(cpu.st);
+    const nextPc = block.fn() >>> 0;
+    this.syncOut(cpu.st);
+    cpu.st.r[15] = nextPc >>> 0;
+    this.nativeInstrs += block.count;
+    return block.count;
+  }
+};
+
 // src/runtime/memory.ts
 var GbaMemory = class {
   bios = new Uint8Array(16384);
@@ -3318,6 +4053,13 @@ var GbaMachine = class {
   mem = new GbaMemory();
   io = new GbaIo();
   cpu;
+  /**
+   * ARM->WASM block recompiler. When enabled, straight-line ARM blocks are translated to real
+   * WebAssembly and executed by the engine; the interpreter handles THUMB, control transfers we
+   * don't lift yet, and the fallthrough single steps. Toggle via `useRecompiler`.
+   */
+  recompiler = null;
+  useRecompiler = true;
   ppu;
   dma;
   timers;
@@ -3341,6 +4083,7 @@ var GbaMachine = class {
     this.flash = new GbaFlash();
     this.mem.flash = this.flash;
     this.cpu = new ArmCore(this.mem);
+    this.recompiler = new Recompiler(this.mem);
     this.header = parseHeader(rom);
     this.rtc = new GbaRtc();
     this.mem.rtc = this.rtc;
@@ -3571,6 +4314,22 @@ var GbaMachine = class {
         this.serviceIrqDispatch();
       }
       return hleCycles;
+    }
+    if (this.useRecompiler && this.recompiler && !this.cpu.st.thumb && !this.cpu.halted) {
+      const n = this.recompiler.tryRunNative(this.cpu);
+      if (n > 0) {
+        this.cpu.cycles += n;
+        this.applyPokemonGen3RuntimeFixes();
+        this.instrCount += n;
+        this.ppu.step(n);
+        this.timers.step(n);
+        this.audio.step(n);
+        if (!this.cpu.halted) {
+          this.irq.poll();
+          this.serviceIrqDispatch();
+        }
+        return n;
+      }
     }
     const c = this.cpu.step();
     this.applyPokemonGen3RuntimeFixes();

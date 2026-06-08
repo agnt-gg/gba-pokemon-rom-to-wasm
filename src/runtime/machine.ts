@@ -11,6 +11,7 @@
  */
 
 import { ArmCore } from '../cpu/arm_core.ts';
+import { Recompiler } from '../recompiler/recompiler.ts';
 import { GbaMemory } from './memory.ts';
 import { GbaIo, REG } from './io.ts';
 import { makeBiosHle } from './bios_hle.ts';
@@ -30,6 +31,13 @@ export class GbaMachine {
   mem = new GbaMemory();
   io = new GbaIo();
   cpu: ArmCore;
+  /**
+   * ARM->WASM block recompiler. When enabled, straight-line ARM blocks are translated to real
+   * WebAssembly and executed by the engine; the interpreter handles THUMB, control transfers we
+   * don't lift yet, and the fallthrough single steps. Toggle via `useRecompiler`.
+   */
+  recompiler: Recompiler | null = null;
+  useRecompiler = true;
   ppu: GbaPpu;
   dma: GbaDma;
   timers: GbaTimers;
@@ -57,6 +65,7 @@ export class GbaMachine {
     this.flash = new GbaFlash();
     this.mem.flash = this.flash;
     this.cpu = new ArmCore(this.mem);
+    this.recompiler = new Recompiler(this.mem);
     this.header = parseHeader(rom);
 
     // Ruby/Sapphire/Emerald bit-bang a cartridge GPIO real-time clock at 0x080000C4-C9.
@@ -320,6 +329,24 @@ export class GbaMachine {
       if (!this.cpu.halted) { this.irq.poll(); this.serviceIrqDispatch(); }
       return hleCycles;
     }
+    // --- Native WASM block fast path ---
+    // If the recompiler can translate a straight-line ARM block at the current PC, run it as real
+    // WebAssembly. It executes N instructions in one shot; we charge N cycles to the hardware
+    // (matching the interpreter's 1 cycle/ARM-instr model) so PPU/timers/audio stay in lockstep.
+    if (this.useRecompiler && this.recompiler && !this.cpu.st.thumb && !this.cpu.halted) {
+      const n = this.recompiler.tryRunNative(this.cpu);
+      if (n > 0) {
+        this.cpu.cycles += n;
+        this.applyPokemonGen3RuntimeFixes();
+        this.instrCount += n;
+        this.ppu.step(n);
+        this.timers.step(n);
+        this.audio.step(n);
+        if (!this.cpu.halted) { this.irq.poll(); this.serviceIrqDispatch(); }
+        return n;
+      }
+    }
+
     const c = this.cpu.step();
     this.applyPokemonGen3RuntimeFixes();
     this.instrCount++;
