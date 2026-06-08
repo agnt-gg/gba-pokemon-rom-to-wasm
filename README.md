@@ -2,9 +2,9 @@
 
 `gba-recomp` is an experimental Game Boy Advance ROM-to-browser runtime and recompiler-oriented hardware host for main-line Gen 3 Pokémon games.
 
-It reads a user-provided Pokémon Ruby/Sapphire/Emerald `.gba` ROM locally, executes the ROM's already-assembled ARM7TDMI machine code, and hosts it inside a JavaScript/WebAssembly-ready GBA hardware runtime.
+It reads a user-provided Pokémon Ruby/Sapphire/Emerald `.gba` ROM locally and runs the ROM's already-assembled ARM7TDMI machine code inside a GBA hardware runtime in the browser. The runtime is a **hybrid recompiler**: hot straight-line ARM blocks are **lifted into real WebAssembly bytecode in-process and executed by the engine** (`new WebAssembly.Module()` — not interpreted), while a correctness-first interpreter handles THUMB and instruction classes the lifter doesn't cover yet. Today ~13% of guest instructions on a Ruby boot execute as engine-run WebAssembly, verified bit-for-bit against the interpreter; expanding lifter coverage (THUMB first) is the active roadmap toward a majority-WASM runtime.
 
-The project began with **Pokémon Ruby / Sapphire** as the bring-up target and is designed around the same binary-lifting discipline as `gb-pokemon-rom-to-wasm`: decode the real cartridge code, preserve hardware-visible semantics, and run the unmodified ROM against a host runtime.
+The project began with **Pokémon Ruby / Sapphire** as the bring-up target and follows the same binary-lifting discipline as `gb-pokemon-rom-to-wasm`: decode the real cartridge machine code, lift it to WebAssembly, preserve hardware-visible semantics exactly, and run the unmodified ROM against a host runtime. See the *ARM → WebAssembly recompiler* section below for what is lifted natively today and how correctness is guaranteed.
 
 > Important: this repository does **not** include any commercial ROM, BIOS image, `.sav`, browser localStorage dump, or generated user-state artifact. You must provide your own legally obtained ROM locally.
 
