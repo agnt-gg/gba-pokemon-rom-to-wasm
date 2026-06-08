@@ -40,6 +40,13 @@ export class GbaIo implements IoBus {
   haltHook: (() => void) | null = null;
   fifoWriteHook: ((offset: number, value: number) => boolean) | null = null;
 
+  /** Lazy live-counter hook for timer CNT_L reads (installed by the runtime). */
+  timerReadHook: ((ch: number) => number) | null = null;
+  /** Lazy live VCOUNT read (returns 0..227). Installed by the runtime for exact mid-block polls. */
+  vcountReadHook: (() => number) | null = null;
+  /** Lazy live DISPSTAT read (status bits 0-2 recomputed). Installed by the runtime. */
+  dispstatReadHook: (() => number) | null = null;
+
   get16(off: number): number { return this.regs[(off & 0x3ff) >> 1]; }
   set16(off: number, v: number): void { this.regs[(off & 0x3ff) >> 1] = v & 0xffff; }
 
@@ -48,6 +55,26 @@ export class GbaIo implements IoBus {
     // KEYINPUT returns live key state (1 = released). Runtime updates regs[KEYINPUT].
     if (off === REG.IF || off === REG.IF + 1) {
       const v = this.ifReadHook ? this.ifReadHook() : this.get16(REG.IF);
+      return (off & 1) ? (v >>> 8) & 0xff : v & 0xff;
+    }
+    // Timer CNT_L registers are LIVE counters. During native (recompiled) execution the runtime
+    // advances timers only at block boundaries, so a mid-block read must be reconciled against the
+    // intra-block cycle count. The hook returns the exact counter for the channel; without it we
+    // fall through to the last-synced register value (interpreter path keeps it current per-instr).
+    if (off >= REG.TM0CNT_L && off <= REG.TM3CNT_L + 1 && (off & 2) === 0 && this.timerReadHook) {
+      const ch = (off - REG.TM0CNT_L) >> 2;
+      const v = this.timerReadHook(ch);
+      return (off & 1) ? (v >>> 8) & 0xff : v & 0xff;
+    }
+    // VCOUNT (0x006-0x007) is a live free-running scanline counter polled tens of thousands of times
+    // per frame; reconcile mid-block reads against intra-block cycles to avoid off-by-one drift.
+    if ((off === REG.VCOUNT || off === REG.VCOUNT + 1) && this.vcountReadHook) {
+      const v = this.vcountReadHook();
+      return (off & 1) ? (v >>> 8) & 0xff : v & 0xff;
+    }
+    // DISPSTAT (0x004-0x005) status bits (VBlank/HBlank/VCount-match) are live; reconcile likewise.
+    if ((off === REG.DISPSTAT || off === REG.DISPSTAT + 1) && this.dispstatReadHook) {
+      const v = this.dispstatReadHook();
       return (off & 1) ? (v >>> 8) & 0xff : v & 0xff;
     }
     const hw = this.get16(off & ~1);

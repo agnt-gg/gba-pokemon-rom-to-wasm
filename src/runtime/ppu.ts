@@ -111,6 +111,87 @@ export class GbaPpu {
     }
   }
 
+  /**
+   * Cycles until the PPU would next raise an ENABLED interrupt (HBlank/VCount/VBlank). Returns
+   * Infinity if no PPU IRQ source is enabled. Used by the recompiler fast-path to avoid running a
+   * native block across an IRQ-delivery boundary (which would service the IRQ at a slightly later
+   * PC than the interpreter, causing a 1-instruction timing slip). When an event is within reach we
+   * single-step instead, preserving bit-exact IRQ timing while keeping native speed elsewhere.
+   */
+  cyclesUntilIrq(): number {
+    const ds = this.io.get16(REG.DISPSTAT);
+    const hbEn = (ds & DS_HBLANK_IRQ) !== 0;
+    const vcEn = (ds & DS_VCOUNT_IRQ) !== 0;
+    const vbEn = (ds & DS_VBLANK_IRQ) !== 0;
+    if (!hbEn && !vcEn && !vbEn) return Infinity;
+    const lyc = (ds >> 8) & 0xff;
+    const sc = this.scanlineCycles;
+    let best = Infinity;
+    // HBlank: fires at HDRAW_CYCLES within the current scanline (if not already past it).
+    if (hbEn && !this.inHblank && sc < HDRAW_CYCLES) best = Math.min(best, HDRAW_CYCLES - sc);
+    // End-of-scanline events (VCount match at next line, VBlank at line 160). Scan forward up to a
+    // full frame to find the nearest enabled end-of-line event.
+    const toLineEnd = CYCLES_PER_SCANLINE - sc;
+    for (let k = 0; k < TOTAL_SCANLINES; k++) {
+      const line = (this.vcount + 1 + k) % TOTAL_SCANLINES;
+      const cyc = toLineEnd + k * CYCLES_PER_SCANLINE;
+      if (vcEn && line === lyc) { best = Math.min(best, cyc); break; }
+      if (vbEn && line === SCREEN_H) { best = Math.min(best, cyc); break; }
+    }
+    return best;
+  }
+
+  /**
+   * Cycles until the next frame-latch boundary: the scanline-end where VCOUNT becomes 160 (VBlank
+   * start, where frameReady flips and the framebuffer is sampled) OR wraps to 0 (next frame start,
+   * where DS_VBLANK clears). The native fast-path single-steps near these so both interpreter and
+   * recompiler latch the framebuffer at exactly the same guest instruction, regardless of whether
+   * a VBlank IRQ is enabled. Returns Infinity only if cycles-per-scanline is misconfigured.
+   */
+  /**
+   * EXACT VCOUNT as-of `pendingCycles` CPU cycles beyond the last hardware sync, without mutating
+   * state. During native (recompiled) execution the runtime advances the PPU only at block
+   * boundaries, so a mid-block VCOUNT read (games poll this tens of thousands of times per frame)
+   * would otherwise be stale by up to a block's worth of cycles, drifting derived counters by 1.
+   * On the interpreter path pendingCycles is 0, returning the current per-instruction value.
+   */
+  liveVcount(pendingCycles: number): number {
+    const total = this.scanlineCycles + (pendingCycles | 0);
+    const linesAhead = Math.floor(total / CYCLES_PER_SCANLINE);
+    if (linesAhead <= 0) return this.vcount & 0xff;
+    return ((this.vcount + linesAhead) % TOTAL_SCANLINES) & 0xff;
+  }
+
+  /**
+   * EXACT DISPSTAT (VBlank/HBlank/VCount-match status bits, bits 0-2) as-of `pendingCycles` beyond
+   * the last sync, without mutating state. The IRQ-enable bits (3-5) and LYC (8-15) are static and
+   * come straight from the stored register. Mirrors liveVcount for mid-block DISPSTAT polls.
+   */
+  liveDispstat(pendingCycles: number): number {
+    const stored = this.io.get16(REG.DISPSTAT);
+    const total = this.scanlineCycles + (pendingCycles | 0);
+    const linesAhead = Math.floor(total / CYCLES_PER_SCANLINE);
+    const line = (this.vcount + linesAhead) % TOTAL_SCANLINES;
+    const cyc = total - linesAhead * CYCLES_PER_SCANLINE; // cycles into the (future) scanline
+    let status = stored & ~0x7; // keep IRQ-enable + LYC bits, recompute status bits
+    if (line >= SCREEN_H) status |= DS_VBLANK;
+    if (cyc >= HDRAW_CYCLES) status |= DS_HBLANK;
+    const lyc = (stored >> 8) & 0xff;
+    if (line === lyc) status |= DS_VCOUNT;
+    return status & 0xffff;
+  }
+
+  cyclesUntilFrameLatch(): number {
+    const sc = this.scanlineCycles;
+    const toLineEnd = CYCLES_PER_SCANLINE - sc;
+    let best = Infinity;
+    for (let k = 0; k < TOTAL_SCANLINES; k++) {
+      const line = (this.vcount + 1 + k) % TOTAL_SCANLINES;
+      if (line === SCREEN_H || line === 0) { best = toLineEnd + k * CYCLES_PER_SCANLINE; break; }
+    }
+    return best;
+  }
+
   // ---- rendering ----
   private putPixel(x: number, y: number, rgb15: number): void {
     const o = (y * SCREEN_W + x) * 4;

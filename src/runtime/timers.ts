@@ -38,6 +38,42 @@ export class GbaTimers {
     this.enabled[ch] = en;
   }
 
+  /**
+   * Compute the EXACT counter value for channel `ch` as if it had been advanced by `pendingCycles`
+   * additional CPU cycles beyond the last sync, WITHOUT mutating timer state. Used by the lazy
+   * timer-read hook so that a timer CNT_L read mid-way through a native (recompiled) block returns
+   * the same value the per-instruction interpreter would, even though the runtime only calls
+   * step() at block boundaries. Handles prescaler division and overflow wrap (reload on overflow).
+   * Count-up (cascade) timers are not cycle-driven, so we return their last synced value.
+   */
+  liveCounter(ch: number, pendingCycles: number): number {
+    if (!this.enabled[ch]) return this.counter[ch] & 0xffff;
+    const ctrl = this.io.get16(this.CNT_H[ch]);
+    if (ch > 0 && (ctrl & 0x4) !== 0) return this.counter[ch] & 0xffff; // count-up: not cycle-driven
+    const ps = PRESCALER[ctrl & 3];
+    const totalSub = this.subcycle[ch] + (pendingCycles | 0);
+    const ticks = Math.floor(totalSub / ps);
+    if (ticks <= 0) return this.counter[ch] & 0xffff;
+    const span = 0x10000 - this.reload[ch]; // ticks per full overflow cycle from reload..0xffff
+    let c = this.counter[ch] + ticks;
+    if (c > 0xffff) {
+      // wrap through reload one or more times
+      c = this.reload[ch] + ((c - 0x10000) % span);
+    }
+    return c & 0xffff;
+  }
+
+  /** True if any non-cascade timer is currently enabled (its CNT_L is a live, cycle-driven value). */
+  anyEnabled(): boolean {
+    for (let ch = 0; ch < 4; ch++) {
+      if (!this.enabled[ch]) continue;
+      const ctrl = this.io.get16(this.CNT_H[ch]);
+      if (ch > 0 && (ctrl & 0x4) !== 0) continue; // count-up timers don't advance on cycles
+      return true;
+    }
+    return false;
+  }
+
   step(cycles: number): void {
     for (let ch = 0; ch < 4; ch++) {
       if (!this.enabled[ch]) continue;

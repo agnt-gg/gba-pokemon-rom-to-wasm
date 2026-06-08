@@ -1,10 +1,10 @@
-# gba-recomp — GBA Pokémon Ruby/Sapphire ROM machine-code to browser
+﻿# gba-recomp â€” GBA PokÃ©mon Ruby/Sapphire ROM machine-code to browser
 
-`gba-recomp` is an experimental Game Boy Advance ROM-to-browser runtime and recompiler-oriented hardware host for main-line Gen 3 Pokémon games.
+`gba-recomp` is an experimental Game Boy Advance ROM-to-browser runtime and recompiler-oriented hardware host for main-line Gen 3 PokÃ©mon games.
 
-It reads a user-provided Pokémon Ruby/Sapphire/Emerald `.gba` ROM locally and runs the ROM's already-assembled ARM7TDMI machine code inside a GBA hardware runtime in the browser. The runtime is a **hybrid recompiler**: hot straight-line ARM blocks are **lifted into real WebAssembly bytecode in-process and executed by the engine** (`new WebAssembly.Module()` — not interpreted), while a correctness-first interpreter handles THUMB and instruction classes the lifter doesn't cover yet. Today ~13% of guest instructions on a Ruby boot execute as engine-run WebAssembly, verified bit-for-bit against the interpreter; expanding lifter coverage (THUMB first) is the active roadmap toward a majority-WASM runtime.
+It reads a user-provided PokÃ©mon Ruby/Sapphire/Emerald `.gba` ROM locally and runs the ROM's already-assembled ARM7TDMI machine code inside a GBA hardware runtime in the browser. The runtime is a **hybrid recompiler**: hot straight-line ARM **and THUMB** blocks are **lifted into real WebAssembly bytecode in-process and executed by the engine** (`new WebAssembly.Module()` - not interpreted), while a correctness-first interpreter handles the instruction classes the lifter deliberately does not model yet (LDM/STM lists, BX mode switches, unaligned word-LDR rotation, PC-as-operand). Today **~74% of executed guest instructions run as engine-run WebAssembly**, and the recompiler output is verified **byte-for-byte identical to the interpreter framebuffers across the full Ruby boot-through-gameplay range** (frames 60-600). Correctness is guaranteed by three independent mechanisms: lifters *bail* on anything they cannot model exactly, every emitted block is *differentially verified* against the interpreter on first run, and RAM-resident blocks carry a *self-modifying-code checksum guard* so the game own routine-relocation tricks can never run stale code. Expanding lifter coverage is the active roadmap toward a majority-everything-WASM runtime.
 
-The project began with **Pokémon Ruby / Sapphire** as the bring-up target and follows the same binary-lifting discipline as `gb-pokemon-rom-to-wasm`: decode the real cartridge machine code, lift it to WebAssembly, preserve hardware-visible semantics exactly, and run the unmodified ROM against a host runtime. See the *ARM → WebAssembly recompiler* section below for what is lifted natively today and how correctness is guaranteed.
+The project began with **PokÃ©mon Ruby / Sapphire** as the bring-up target and follows the same binary-lifting discipline as `gb-pokemon-rom-to-wasm`: decode the real cartridge machine code, lift it to WebAssembly, preserve hardware-visible semantics exactly, and run the unmodified ROM against a host runtime. See the *ARM/THUMB -> WebAssembly recompiler* section below for what is lifted natively today and how correctness is guaranteed.
 
 > Important: this repository does **not** include any commercial ROM, BIOS image, `.sav`, browser localStorage dump, or generated user-state artifact. You must provide your own legally obtained ROM locally.
 
@@ -12,11 +12,11 @@ The project began with **Pokémon Ruby / Sapphire** as the bring-up target and f
 
 ```txt
 GBA ROM bytes
-→ ARM7TDMI ARM/THUMB decoder + interpreter/recompiler-ready core
-→ BIOS HLE for documented GBA SWIs
-→ GBA hardware runtime: memory map, MMIO, PPU, DMA, timers, IRQ, audio, Flash, RTC
-→ browser host: canvas, keyboard/touch, audio, local save persistence
-→ playable Pokémon Ruby/Sapphire target
+â†’ ARM7TDMI ARM/THUMB decoder + interpreter/recompiler-ready core
+â†’ BIOS HLE for documented GBA SWIs
+â†’ GBA hardware runtime: memory map, MMIO, PPU, DMA, timers, IRQ, audio, Flash, RTC
+â†’ browser host: canvas, keyboard/touch, audio, local save persistence
+â†’ playable PokÃ©mon Ruby/Sapphire target
 ```
 
 This is not source assembly compilation and it is not a ROM distribution project. It is an emulator/recompiler research runtime for user-supplied ROM bytes.
@@ -25,16 +25,16 @@ This is not source assembly compilation and it is not a ROM distribution project
 
 | Game | Header title | Game code | Save hardware | Runtime status |
 |---|---|---:|---|---|
-| Pokémon Ruby | `POKEMON RUBY` | `AXVE` | 128K Flash + RTC | Primary playable bring-up target |
-| Pokémon Sapphire | `POKEMON SAPP` | `AXPE` | 128K Flash + RTC | Supported sibling target |
-| Pokémon Emerald | `POKEMON EMER` | `BPEE` | 128K Flash + RTC | Architecture target; additional game-specific work expected |
+| PokÃ©mon Ruby | `POKEMON RUBY` | `AXVE` | 128K Flash + RTC | Primary playable bring-up target |
+| PokÃ©mon Sapphire | `POKEMON SAPP` | `AXPE` | 128K Flash + RTC | Supported sibling target |
+| PokÃ©mon Emerald | `POKEMON EMER` | `BPEE` | 128K Flash + RTC | Architecture target; additional game-specific work expected |
 
 ## What works now
 
 - ARM7TDMI core with ARM + THUMB execution
 - Banked CPU modes, CPSR/SPSR, IRQ/SVC behavior
 - GBA memory map: BIOS/EWRAM/IWRAM/MMIO/palette/VRAM/OAM/ROM/Flash
-- BIOS HLE for Pokémon-critical SWIs: IntrWait/VBlankIntrWait, CpuSet/CpuFastSet, affine helpers, decompression, math, SoftReset diagnostics
+- BIOS HLE for PokÃ©mon-critical SWIs: IntrWait/VBlankIntrWait, CpuSet/CpuFastSet, affine helpers, decompression, math, SoftReset diagnostics
 - PPU scanline runtime with backgrounds, sprites, windows/blending coverage for Ruby/Sapphire bring-up
 - DMA, timers, interrupt controller, HBlank/VBlank paths
 - 128K Flash save model and browser localStorage persistence
@@ -98,7 +98,7 @@ Run the main suite manually:
 for t in tests/*.test.ts; do node --experimental-strip-types "$t"; done
 ```
 
-Some tests reference local Pokémon ROM paths and therefore require your own ROM files. Commercial ROMs are intentionally not committed.
+Some tests reference local PokÃ©mon ROM paths and therefore require your own ROM files. Commercial ROMs are intentionally not committed.
 
 ## Repository hygiene
 

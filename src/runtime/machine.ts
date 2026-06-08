@@ -330,7 +330,14 @@ export class GbaMachine {
       return hleCycles;
     }
     // --- Native WASM block fast path ---
-    if (this.useRecompiler && this.recompiler && !this.cpu.st.thumb && !this.cpu.halted) {
+    // Bit-exact IRQ timing: the interpreter services IRQs at every instruction boundary, but a
+    // native block defers servicing to block-end. If a PPU IRQ (HBlank/VCount/VBlank) is due
+    // within one block's worth of cycles, run the interpreter single-step instead so the IRQ is
+    // taken at exactly the right PC. Far from any event (the overwhelming majority of execution)
+    // we run native at full speed. THUMB ~1 cycle/instr and MAX block = 256, so a ~300-cycle guard
+    // band fully covers the worst-case block span.
+    const irqSafe = this.cpu.halted ? true : (this.ppu.cyclesUntilIrq() > 320 && this.ppu.cyclesUntilFrameLatch() > 320 && !((globalThis as any).__NO_NATIVE_WHEN_TIMERS && this.timers.anyEnabled()));
+    if (this.useRecompiler && this.recompiler && !this.cpu.halted && irqSafe) {
       const n = this.recompiler.tryRunNative(this.cpu);
       if (n > 0) {
         this.cpu.cycles += n;
@@ -375,7 +382,14 @@ export class GbaMachine {
     // where a static-but-alive screen was wrongly reported as "frozen".
     const liveSet = this._liveSet; liveSet.clear();
     let liveSamples = 0;
-    while (cyclesThisFrame < CYCLES_PER_FRAME && guard < 4_000_000) {
+    // Exit precisely when the PPU latches the frame (VBlank start, frameReady), not at a raw cycle
+    // count. Because the native fast-path single-steps near the frame-latch boundary (see irqSafe /
+    // cyclesUntilFrameLatch), both the interpreter and the recompiler stop at the SAME guest
+    // instruction, keeping them phase-locked frame after frame instead of drifting by a block's
+    // worth of instructions each frame (which previously desynced animations by ~frame 165+). The
+    // cycle budget remains a safety cap in case frameReady is somehow missed.
+    const FRAME_CAP = CYCLES_PER_FRAME + CYCLES_PER_FRAME; // generous safety ceiling
+    while (!this.ppu.frameReady && cyclesThisFrame < FRAME_CAP && guard < 4_000_000) {
       if (this.cpu.halted) {
         // Advance hardware in small steps until an interrupt wakes the CPU. poll() may deliver an
         // IRQ (which clears halted and vectors to 0x18); serviceIrqDispatch then redirects to the

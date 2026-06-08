@@ -1994,6 +1994,498 @@ var RESERVED_LOCALS = [
   // L_A, L_B, L_RES
 ];
 
+// src/recompiler/thumb_lifter.ts
+var L_A2 = 0;
+var L_B2 = 1;
+var L_RES2 = 2;
+function loadReg2(cb, n) {
+  cb.i32_const(regOff(n)).i32_load(0);
+  return cb;
+}
+function storeRegFromStack(cb, n) {
+  cb.local_set(L_RES2);
+  cb.i32_const(regOff(n));
+  cb.local_get(L_RES2);
+  cb.i32_store(0);
+}
+function storeRegFromLocal(cb, n, local) {
+  cb.i32_const(regOff(n));
+  cb.local_get(local);
+  cb.i32_store(0);
+}
+function setNZfromLocal(cb, local) {
+  cb.i32_const(OFF_ZF);
+  cb.local_get(local).op(OP.i32_eqz);
+  cb.i32_store(0);
+  cb.i32_const(OFF_NF);
+  cb.local_get(local).i32_const(0).op(OP.i32_lt_s);
+  cb.i32_store(0);
+}
+function setFlagWord(cb, off, push) {
+  cb.i32_const(off);
+  push(cb);
+  cb.i32_store(0);
+}
+function liftThumb(cb, instr, pc) {
+  const pcPlus4 = pc + 4 >>> 0;
+  const top = instr >>> 13;
+  if (top === 0) {
+    const op = instr >>> 11 & 3;
+    if (op === 3) {
+      const sub = (instr & 512) !== 0;
+      const immFlag = (instr & 1024) !== 0;
+      const rn = instr >>> 6 & 7;
+      const rs2 = instr >>> 3 & 7;
+      const rd2 = instr & 7;
+      loadReg2(cb, rs2).local_set(L_A2);
+      if (immFlag) cb.i32_const(rn).local_set(L_B2);
+      else loadReg2(cb, rn).local_set(L_B2);
+      if (sub) {
+        cb.local_get(L_A2).local_get(L_B2).op(OP.i32_sub).local_set(L_RES2);
+        storeRegFromLocal(cb, rd2, L_RES2);
+        setNZfromLocal(cb, L_RES2);
+        setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).local_get(L_B2).op(OP.i32_ge_u));
+        setFlagWord(cb, OFF_VF, (b) => {
+          b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor);
+          b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+          b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+        });
+      } else {
+        cb.local_get(L_A2).local_get(L_B2).op(OP.i32_add).local_set(L_RES2);
+        storeRegFromLocal(cb, rd2, L_RES2);
+        setNZfromLocal(cb, L_RES2);
+        setFlagWord(cb, OFF_CF, (b) => b.local_get(L_RES2).local_get(L_A2).op(OP.i32_lt_u));
+        setFlagWord(cb, OFF_VF, (b) => {
+          b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
+          b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+          b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+        });
+      }
+      return { status: "ok" };
+    }
+    const amount = instr >>> 6 & 31;
+    const rs = instr >>> 3 & 7;
+    const rd = instr & 7;
+    loadReg2(cb, rs).local_set(L_A2);
+    if (op === 0) {
+      if (amount === 0) {
+        cb.local_get(L_A2).local_set(L_RES2);
+        storeRegFromLocal(cb, rd, L_RES2);
+        setNZfromLocal(cb, L_RES2);
+        return { status: "ok" };
+      }
+      cb.local_get(L_A2).i32_const(amount).op(OP.i32_shl).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).i32_const(32 - amount).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and));
+      return { status: "ok" };
+    }
+    if (op === 1) {
+      const amt2 = amount === 0 ? 32 : amount;
+      if (amt2 === 32) {
+        cb.i32_const(0).local_set(L_RES2);
+        storeRegFromLocal(cb, rd, L_RES2);
+        setNZfromLocal(cb, L_RES2);
+        setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).i32_const(31).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and));
+        return { status: "ok" };
+      }
+      cb.local_get(L_A2).i32_const(amt2).op(OP.i32_shr_u).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).i32_const(amt2 - 1).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and));
+      return { status: "ok" };
+    }
+    const amt = amount === 0 ? 32 : amount;
+    if (amt === 32) {
+      cb.local_get(L_A2).i32_const(31).op(OP.i32_shr_s).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).i32_const(31).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and));
+      return { status: "ok" };
+    }
+    cb.local_get(L_A2).i32_const(amt).op(OP.i32_shr_s).local_set(L_RES2);
+    storeRegFromLocal(cb, rd, L_RES2);
+    setNZfromLocal(cb, L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).i32_const(amt - 1).op(OP.i32_shr_s).i32_const(1).op(OP.i32_and));
+    return { status: "ok" };
+  }
+  if (top === 1) {
+    const op = instr >>> 11 & 3;
+    const rd = instr >>> 8 & 7;
+    const imm = instr & 255;
+    loadReg2(cb, rd).local_set(L_A2);
+    cb.i32_const(imm).local_set(L_B2);
+    if (op === 0) {
+      cb.i32_const(imm).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    }
+    if (op === 2) {
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_add).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_RES2).local_get(L_A2).op(OP.i32_lt_u));
+      setFlagWord(cb, OFF_VF, (b) => {
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
+        b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+      return { status: "ok" };
+    }
+    cb.local_get(L_A2).local_get(L_B2).op(OP.i32_sub).local_set(L_RES2);
+    if (op === 3) storeRegFromLocal(cb, rd, L_RES2);
+    setNZfromLocal(cb, L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).local_get(L_B2).op(OP.i32_ge_u));
+    setFlagWord(cb, OFF_VF, (b) => {
+      b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor);
+      b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+      b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+    });
+    return { status: "ok" };
+  }
+  if (top === 2) {
+    if ((instr & 64512) === 16384) {
+      return liftAluReg(cb, instr);
+    }
+    if ((instr & 64512) === 17408) {
+      return liftHiReg(cb, instr, pcPlus4);
+    }
+    return { status: "bail" };
+  }
+  if (top === 3) {
+    const byte = (instr & 4096) !== 0;
+    const load = (instr & 2048) !== 0;
+    const off = instr >>> 6 & 31;
+    const rb = instr >>> 3 & 7;
+    const rd = instr & 7;
+    loadReg2(cb, rb);
+    cb.i32_const(byte ? off : off << 2);
+    cb.op(OP.i32_add).local_set(L_A2);
+    if (load) {
+      if (!byte) return { status: "bail" };
+      cb.local_get(L_A2).call(HOST.read8);
+      storeRegFromStack(cb, rd);
+    } else {
+      if (byte) {
+        cb.local_get(L_A2);
+        loadReg2(cb, rd);
+        cb.call(HOST.write8);
+      } else {
+        cb.local_get(L_A2).i32_const(~3).op(OP.i32_and);
+        loadReg2(cb, rd);
+        cb.call(HOST.write32);
+      }
+    }
+    return { status: "ok" };
+  }
+  if (top === 4) {
+    if ((instr & 61440) === 32768) {
+      const load2 = (instr & 2048) !== 0;
+      const off2 = (instr >>> 6 & 31) << 1;
+      const rb = instr >>> 3 & 7;
+      const rd2 = instr & 7;
+      loadReg2(cb, rb).i32_const(off2).op(OP.i32_add).i32_const(~1).op(OP.i32_and).local_set(L_A2);
+      if (load2) {
+        cb.local_get(L_A2).call(HOST.read16);
+        storeRegFromStack(cb, rd2);
+      } else {
+        cb.local_get(L_A2);
+        loadReg2(cb, rd2);
+        cb.call(HOST.write16);
+      }
+      return { status: "ok" };
+    }
+    const load = (instr & 2048) !== 0;
+    const rd = instr >>> 8 & 7;
+    const off = (instr & 255) << 2;
+    loadReg2(cb, 13).i32_const(off).op(OP.i32_add).local_set(L_A2);
+    if (load) return { status: "bail" };
+    cb.local_get(L_A2).i32_const(~3).op(OP.i32_and);
+    loadReg2(cb, rd);
+    cb.call(HOST.write32);
+    return { status: "ok" };
+  }
+  if (top === 5) {
+    if ((instr & 61440) === 40960) {
+      const sp = (instr & 2048) !== 0;
+      const rd = instr >>> 8 & 7;
+      const off = (instr & 255) << 2;
+      if (sp) {
+        loadReg2(cb, 13).i32_const(off).op(OP.i32_add).local_set(L_RES2);
+      } else {
+        cb.i32_const((pcPlus4 & ~3) >>> 0).i32_const(off).op(OP.i32_add).local_set(L_RES2);
+      }
+      storeRegFromLocal(cb, rd, L_RES2);
+      return { status: "ok" };
+    }
+    if ((instr & 65280) === 45056) {
+      const off = (instr & 127) << 2;
+      const sub = (instr & 128) !== 0;
+      loadReg2(cb, 13).i32_const(off).op(sub ? OP.i32_sub : OP.i32_add).local_set(L_RES2);
+      storeRegFromLocal(cb, 13, L_RES2);
+      return { status: "ok" };
+    }
+    return { status: "bail" };
+  }
+  if (top === 6) {
+    if ((instr & 61440) === 49152) {
+      return { status: "bail" };
+    }
+    const cond = instr >>> 8 & 15;
+    if (cond === 15) return { status: "bail" };
+    if (cond === 14) return { status: "bail" };
+    let off = instr & 255;
+    if (off & 128) off |= 4294967040;
+    const taken = pcPlus4 + (off << 1) >>> 0;
+    const notTaken = pc + 2 >>> 0;
+    emitCond(cb, cond);
+    cb.if_();
+    cb.i32_const(regOff(15)).i32_const(taken).i32_store(0);
+    cb.else_();
+    cb.i32_const(regOff(15)).i32_const(notTaken).i32_store(0);
+    cb.end();
+    return { status: "endsBlock" };
+  }
+  if (top === 7) {
+    const sub = instr >>> 11 & 31;
+    if (sub === 28) {
+      let off = instr & 2047;
+      if (off & 1024) off |= 4294965248;
+      const target = pcPlus4 + (off << 1) >>> 0;
+      cb.i32_const(regOff(15)).i32_const(target).i32_store(0);
+      return { status: "endsBlock", staticTarget: target };
+    }
+    if (sub === 30) {
+      let hi = (instr & 2047) << 12;
+      if (hi & 4194304) hi |= 4286578688;
+      const lr = pcPlus4 + hi >>> 0;
+      cb.i32_const(regOff(14)).i32_const(lr).i32_store(0);
+      return { status: "ok" };
+    }
+    if (sub === 31) {
+      const off = (instr & 2047) << 1;
+      const next = (pc + 2 | 1) >>> 0;
+      cb.i32_const(regOff(15));
+      loadReg2(cb, 14).i32_const(off).op(OP.i32_add);
+      cb.i32_store(0);
+      cb.i32_const(regOff(14)).i32_const(next).i32_store(0);
+      return { status: "endsBlock", isCall: true };
+    }
+    return { status: "bail" };
+  }
+  return { status: "bail" };
+}
+function liftAluReg(cb, instr) {
+  const op = instr >>> 6 & 15;
+  const rs = instr >>> 3 & 7;
+  const rd = instr & 7;
+  const loadAB = () => {
+    loadReg2(cb, rd).local_set(L_A2);
+    loadReg2(cb, rs).local_set(L_B2);
+  };
+  switch (op) {
+    case 0:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_and).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    case 1:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_xor).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    case 12:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_or).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    case 14:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).i32_const(-1).op(OP.i32_xor).op(OP.i32_and).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    case 15:
+      loadReg2(cb, rs).i32_const(-1).op(OP.i32_xor).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    case 8:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_and).local_set(L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    case 10:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_sub).local_set(L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).local_get(L_B2).op(OP.i32_ge_u));
+      setFlagWord(cb, OFF_VF, (b) => {
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor);
+        b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+      return { status: "ok" };
+    case 11:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_add).local_set(L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_RES2).local_get(L_A2).op(OP.i32_lt_u));
+      setFlagWord(cb, OFF_VF, (b) => {
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
+        b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+      return { status: "ok" };
+    case 13:
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_mul).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    case 9:
+      loadReg2(cb, rs).local_set(L_B2);
+      cb.i32_const(0).local_get(L_B2).op(OP.i32_sub).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_B2).op(OP.i32_eqz));
+      setFlagWord(cb, OFF_VF, (b) => {
+        b.local_get(L_B2).local_get(L_RES2).op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+      return { status: "ok" };
+    // 0x2 LSL, 0x3 LSR, 0x4 ASR, 0x7 ROR (register-amount shifts), 0x5 ADC, 0x6 SBC:
+    // these need full register-amount shifter-carry / carry-in modeling. Bail to interpreter.
+    default:
+      return { status: "bail" };
+  }
+}
+function liftHiReg(cb, instr, pcPlus4) {
+  const op = instr >>> 8 & 3;
+  const h1 = (instr & 128) !== 0;
+  const h2 = (instr & 64) !== 0;
+  let rs = instr >>> 3 & 7;
+  let rd = instr & 7;
+  if (h1) rd += 8;
+  if (h2) rs += 8;
+  if (op === 3) return { status: "bail" };
+  if (rd === 15 || rs === 15) return { status: "bail" };
+  switch (op) {
+    case 0:
+      loadReg2(cb, rd).local_set(L_A2);
+      loadReg2(cb, rs).local_set(L_B2);
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_add).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      return { status: "ok" };
+    case 1: {
+      loadReg2(cb, rd).local_set(L_A2);
+      loadReg2(cb, rs).local_set(L_B2);
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_sub).local_set(L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).local_get(L_B2).op(OP.i32_ge_u));
+      setFlagWord(cb, OFF_VF, (b) => {
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor);
+        b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+      return { status: "ok" };
+    }
+    case 2:
+      loadReg2(cb, rs).local_set(L_RES2);
+      storeRegFromLocal(cb, rd, L_RES2);
+      return { status: "ok" };
+  }
+  return { status: "bail" };
+}
+function emitCond(cb, cond) {
+  const N = () => cb.i32_const(OFF_NF).i32_load(0);
+  const Z = () => cb.i32_const(OFF_ZF).i32_load(0);
+  const C = () => cb.i32_const(OFF_CF).i32_load(0);
+  const V = () => cb.i32_const(OFF_VF).i32_load(0);
+  switch (cond) {
+    case 0:
+      Z();
+      break;
+    // EQ: Z
+    case 1:
+      Z();
+      cb.op(OP.i32_eqz);
+      break;
+    // NE: !Z
+    case 2:
+      C();
+      break;
+    // CS: C
+    case 3:
+      C();
+      cb.op(OP.i32_eqz);
+      break;
+    // CC: !C
+    case 4:
+      N();
+      break;
+    // MI: N
+    case 5:
+      N();
+      cb.op(OP.i32_eqz);
+      break;
+    // PL: !N
+    case 6:
+      V();
+      break;
+    // VS: V
+    case 7:
+      V();
+      cb.op(OP.i32_eqz);
+      break;
+    // VC: !V
+    case 8:
+      C();
+      Z().op(OP.i32_eqz);
+      cb.op(OP.i32_and);
+      break;
+    // HI: C && !Z
+    case 9:
+      C().op(OP.i32_eqz);
+      Z();
+      cb.op(OP.i32_or);
+      break;
+    // LS: !C || Z
+    case 10:
+      N();
+      V();
+      cb.op(OP.i32_eq);
+      break;
+    // GE: N == V
+    case 11:
+      N();
+      V();
+      cb.op(OP.i32_ne);
+      break;
+    // LT: N != V
+    case 12:
+      Z().op(OP.i32_eqz);
+      N();
+      V();
+      cb.op(OP.i32_eq);
+      cb.op(OP.i32_and);
+      break;
+    case 13:
+      Z();
+      N();
+      V();
+      cb.op(OP.i32_ne);
+      cb.op(OP.i32_or);
+      break;
+    default:
+      cb.i32_const(1);
+      break;
+  }
+}
+
 // src/recompiler/recompiler.ts
 var tHostRead = { params: [I32], results: [I32] };
 var tHostWrite = { params: [I32, I32], results: [] };
@@ -2005,7 +2497,9 @@ var Recompiler = class {
   i32;
   u32;
   cache = /* @__PURE__ */ new Map();
-  // null = "no native prefix, interpret"
+  // null = "no native prefix, interpret" (ARM)
+  cacheThumb = /* @__PURE__ */ new Map();
+  // THUMB block cache, keyed by pc
   // stats
   nativeInstrs = 0;
   interpInstrs = 0;
@@ -2121,6 +2615,71 @@ var Recompiler = class {
     return block;
   }
   /**
+   * Compile a THUMB block starting at `pc` (the address of the first 16-bit instruction). Mirrors
+   * compileBlock but decodes 16-bit instructions, steps by 2, and uses the THUMB lifter. Cached in
+   * a separate map so an address can have both an ARM and a THUMB compilation if ever reused in
+   * both modes (it won't in practice, but keeping them separate is correctness-safe).
+   */
+  compileBlockThumb(pc) {
+    if (this.cacheThumb.has(pc)) return this.cacheThumb.get(pc);
+    if (this.cacheThumb.size >= this.MAX_CACHE) return null;
+    const cb = new CodeBuilder();
+    let cur = pc >>> 0;
+    let count = 0;
+    let endedByBranch = false;
+    let hasStore = false;
+    const MAX = 256;
+    while (count < MAX) {
+      const instr = this.bus.read16(cur) & 65535;
+      const top = instr >>> 13;
+      if (top === 3 && (instr & 2048) === 0) hasStore = true;
+      else if (top === 4 && (instr & 61440) === 32768 && (instr & 2048) === 0) hasStore = true;
+      else if (top === 4 && (instr & 61440) !== 32768 && (instr & 2048) === 0) hasStore = true;
+      const res = liftThumb(cb, instr, cur);
+      if (res.status === "bail") break;
+      count++;
+      if (res.status === "endsBlock") {
+        endedByBranch = true;
+        break;
+      }
+      cur = cur + 2 >>> 0;
+    }
+    if (count === 0) {
+      this.cacheThumb.set(pc, null);
+      return null;
+    }
+    if (!endedByBranch) {
+      cb.i32_const(regOff(15));
+      cb.i32_const(cur >>> 0);
+      cb.i32_store(0);
+    }
+    cb.i32_const(regOff(15)).i32_load(0);
+    cb.return_();
+    const mod = buildModule({
+      types: [tHostRead, tHostWrite, tBlock],
+      imports: HOST_IMPORT_ORDER.map((name) => ({
+        module: "env",
+        name,
+        type: name.startsWith("read") ? tHostRead : tHostWrite
+      })),
+      memory: { module: "env", name: "mem", minPages: 1 },
+      functions: [{ locals: RESERVED_LOCALS, code: cb.build(), typeIndex: 2, exportName: "block" }]
+    });
+    const module = new WebAssembly.Module(mod);
+    const instance = new WebAssembly.Instance(module, {
+      env: { mem: this.mem, ...this.hostImports() }
+    });
+    const block = {
+      startPc: pc,
+      count,
+      hasStore,
+      fn: instance.exports.block
+    };
+    this.cacheThumb.set(pc, block);
+    this.blocksCompiled++;
+    return block;
+  }
+  /**
    * Run one "unit of progress" from the interpreter's current PC:
    *   - If a native block compiles at PC, sync in, run the WASM block, sync out, return native count.
    *   - Otherwise, return 0 to signal the caller to interpret a single instruction.
@@ -2128,11 +2687,11 @@ var Recompiler = class {
    * The caller (HybridCpu) owns the interpreter and the cycle/IRQ bookkeeping.
    */
   tryRunNative(cpu) {
-    if (cpu.st.thumb) return 0;
     const pc = cpu.st.r[15] >>> 0;
-    const block = this.compileBlock(pc);
+    const block = cpu.st.thumb ? this.compileBlockThumb(pc) : this.compileBlock(pc);
     if (!block) return 0;
-    if (this.verifyFirstRun && !this.verified.has(pc) && !block.hasStore) {
+    const verifyKey = ((cpu.st.thumb ? 2147483648 : 0) | pc) >>> 0;
+    if (this.verifyFirstRun && !this.verified.has(verifyKey) && !block.hasStore) {
       const snapR = Int32Array.from(cpu.st.r);
       const snapCpsr = cpu.st.cpsr >>> 0;
       this.syncIn(cpu.st);
@@ -2157,11 +2716,11 @@ var Recompiler = class {
         cpu.st.r.set(snapR);
         cpu.st.cpsr = snapCpsr;
         cpu.st.r[15] = pc;
-        this.cache.set(pc, null);
+        (cpu.st.thumb ? this.cacheThumb : this.cache).set(pc, null);
         this.blocksRejected++;
         return 0;
       }
-      this.verified.add(pc);
+      this.verified.add(verifyKey);
       this.nativeInstrs += block.count;
       return block.count;
     }
