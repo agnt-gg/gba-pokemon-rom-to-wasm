@@ -5,9 +5,6 @@ node_modules/
 build/*.ppm
 build/*.png
 build/*.wav
-tools/*.png
-tools/*.ppm
-tools/*.wav
 build/*.wasm
 build/*.wat
 *.map

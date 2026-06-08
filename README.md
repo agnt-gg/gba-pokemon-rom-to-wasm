@@ -2,7 +2,7 @@
 
 `gba-recomp` is an experimental Game Boy Advance ROM-to-browser runtime and recompiler-oriented hardware host for main-line Gen 3 Pokémon games.
 
-It reads a user-provided Pokémonémon Ruby/Sapphire/Emerald `.gba` ROM locally, executes the ROM's already-assembled ARM7TDMI machine code, and hosts it inside a JavaScript/WebAssembly-ready GBA hardware runtime.
+It reads a user-provided Pokémon Ruby/Sapphire/Emerald `.gba` ROM locally, executes the ROM's already-assembled ARM7TDMI machine code, and hosts it inside a JavaScript/WebAssembly-ready GBA hardware runtime.
 
 The project began with **Pokémon Ruby / Sapphire** as the bring-up target and is designed around the same binary-lifting discipline as `gb-pokemon-rom-to-wasm`: decode the real cartridge code, preserve hardware-visible semantics, and run the unmodified ROM against a host runtime.
 
@@ -20,66 +20,6 @@ GBA ROM bytes
 ```
 
 This is not source assembly compilation and it is not a ROM distribution project. It is an emulator/recompiler research runtime for user-supplied ROM bytes.
-
-## ARM → WebAssembly recompiler (this really runs WASM)
-
-The runtime is a **hybrid**: an interpreter for correctness and a real ARM→WebAssembly
-recompiler for the hot path. The recompiler is genuine — it emits raw `.wasm` bytecode
-in-process (no `wabt` / `binaryen` / external toolchain), hands it to
-`new WebAssembly.Module()`, and the browser/Node WASM engine executes the translated guest
-code against the CPU register file held in `WebAssembly.Memory`.
-
-```txt
-ARM machine code (from the ROM)
- → per-instruction lifter (src/recompiler/arm_lifter.ts)
- → basic-block discovery + hand-encoded WASM module (src/recompiler/wasm_encoder.ts)
- → new WebAssembly.Module() / Instance()  ← executed by the engine, not interpreted
- → host imports bridge guest memory/MMIO back to the GBA bus
-```
-
-What is lifted natively today (ARM, condition AL):
-
-- data-processing: `MOV/MVN/ADD/SUB/RSB/AND/EOR/ORR/BIC`, immediate or immediate-shifted reg
-- compares/tests that set flags: `CMP/CMN/TST/TEQ` (N/Z/C/V computed inline, incl. signed
-  overflow and unsigned carry)
-- `B` / `BL` with static targets
-- `STR/STRB`, `LDRB`, pre/post-indexed with writeback (immediate offset)
-
-Everything else (THUMB, word `LDR` with unaligned rotation, `LDM/STM`, `MUL`, `MSR/MRS`,
-`BX`, `SWI`, conditional execution) safely **falls back to the interpreter**. A correct
-hybrid beats an incorrect “100% native.”
-
-### Why you can trust it
-
-Two independent guarantees keep the recompiler from ever diverging from real hardware
-semantics:
-
-1. **Differential unit tests** (`tests/recompiler_diff.test.ts`): every lifted instruction
-   class is run through both the interpreter and a freshly emitted WASM module from identical
-   state, and `r0..r14` + `N/Z/C/V` are asserted **bit-identical**.
-2. **First-run self-verification gate** (runtime): the first time a block executes natively,
-   the same instructions are replayed on a reference interpreter and compared; any mismatch
-   permanently rejects that block (it interprets instead). The recompiler can only be a
-   correct speedup or a safe fallback — never a correctness regression.
-
-The full **jsmolka GBA CPU conformance suite passes (ARM=PASS, THUMB=PASS) with the
-recompiler active**, and Pokémon Ruby boots and renders identically with native blocks on.
-
-### Measured native coverage (Pokémon Ruby, 300-frame boot)
-
-```txt
-total guest instrs    : ~8.84M
-native (WASM) instrs  : ~1.14M   (~13%)
-blocks compiled       : 48
-blocks rejected (gate): 11        ← the safety net working as designed
-```
-
-Coverage is ARM-only for now; Ruby is heavily THUMB, so **THUMB lifting is the next and
-largest lever**. Run it yourself:
-
-```bash
-node --experimental-strip-types tools/recomp_coverage.ts <your.gba> 300
-```
 
 ## Current target matrix
 

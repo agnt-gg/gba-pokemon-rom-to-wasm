@@ -32,9 +32,9 @@ export class GbaMachine {
   io = new GbaIo();
   cpu: ArmCore;
   /**
-   * ARM->WASM block recompiler. When enabled, straight-line ARM blocks are translated to real
-   * WebAssembly and executed by the engine; the interpreter handles THUMB, control transfers we
-   * don't lift yet, and the fallthrough single steps. Toggle via `useRecompiler`.
+   * ARM->WASM block recompiler. Straight-line ARM blocks are translated to real WebAssembly and
+   * executed by the engine; the interpreter handles THUMB, control transfers we don't lift yet,
+   * and fallthrough single steps. Toggle via `useRecompiler`.
    */
   recompiler: Recompiler | null = null;
   useRecompiler = true;
@@ -330,9 +330,6 @@ export class GbaMachine {
       return hleCycles;
     }
     // --- Native WASM block fast path ---
-    // If the recompiler can translate a straight-line ARM block at the current PC, run it as real
-    // WebAssembly. It executes N instructions in one shot; we charge N cycles to the hardware
-    // (matching the interpreter's 1 cycle/ARM-instr model) so PPU/timers/audio stay in lockstep.
     if (this.useRecompiler && this.recompiler && !this.cpu.st.thumb && !this.cpu.halted) {
       const n = this.recompiler.tryRunNative(this.cpu);
       if (n > 0) {

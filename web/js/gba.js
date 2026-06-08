@@ -1834,8 +1834,9 @@ function liftArm(cb, instr, pc) {
       cb.local_set(L_A);
     }
     if (L) {
+      if (!B) return { status: "bail" };
       cb.local_get(L_A);
-      cb.call(B ? HOST.read8 : HOST.read32);
+      cb.call(HOST.read8);
       storeReg(cb, Rd);
     } else {
       cb.local_get(L_A);
@@ -4054,9 +4055,9 @@ var GbaMachine = class {
   io = new GbaIo();
   cpu;
   /**
-   * ARM->WASM block recompiler. When enabled, straight-line ARM blocks are translated to real
-   * WebAssembly and executed by the engine; the interpreter handles THUMB, control transfers we
-   * don't lift yet, and the fallthrough single steps. Toggle via `useRecompiler`.
+   * ARM->WASM block recompiler. Straight-line ARM blocks are translated to real WebAssembly and
+   * executed by the engine; the interpreter handles THUMB, control transfers we don't lift yet,
+   * and fallthrough single steps. Toggle via `useRecompiler`.
    */
   recompiler = null;
   useRecompiler = true;
