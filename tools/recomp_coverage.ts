@@ -41,3 +41,10 @@ for (const v of rec.cache.values()) v ? armBlk++ : armNull++;
 for (const v of rec.cacheThumb.values()) v ? thmBlk++ : thmNull++;
 console.log(`ARM blocks/null       : ${armBlk}/${armNull}`);
 console.log(`THUMB blocks/null     : ${thmBlk}/${thmNull}`);
+// Bail-reason telemetry: why block discovery stopped, keyed mode:reason, sorted by frequency.
+const reasons = [...rec.bailReasons.entries()].sort((a, b) => b[1] - a[1]);
+if (reasons.length) {
+  console.log('--- bail reasons (block discovery) ---');
+  for (const [k, v] of reasons) console.log(`  ${k.padEnd(24)} ${v}`);
+}
+

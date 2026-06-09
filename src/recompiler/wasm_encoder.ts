@@ -90,6 +90,10 @@ export const OP = {
   i64_add: 0x7c,
   i64_mul: 0x7e,
   i64_and: 0x83,
+  i64_or: 0x84,
+  i64_xor: 0x85,
+  i64_sub: 0x7d,
+  i64_eqz: 0x50,
   i64_shr_u: 0x88,
   i64_shl: 0x86,
 } as const;

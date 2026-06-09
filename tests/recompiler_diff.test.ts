@@ -31,6 +31,8 @@ const BASE = 0x08000000;
 
 function loadProgram(bus: RamBus, words: number[]) {
   for (let i = 0; i < words.length; i++) bus.write32(BASE + i * 4, words[i] >>> 0);
+  // Terminate with `B .` so the recompiled block ends exactly at the program boundary.
+  bus.write32(BASE + words.length * 4, 0xeafffffe);
 }
 
 function freshCpu(words: number[], init: (c: ArmCore) => void): { cpu: ArmCore; bus: RamBus } {
@@ -98,7 +100,7 @@ test('MOV/ADD/SUB immediate chain matches interpreter', () => {
   const init = () => {};
   const interp = runInterp(prog, 4, init);
   const { snap, nativeCount } = runWasm(prog, init);
-  if (nativeCount !== 4) throw new Error(`expected 4 native instrs, got ${nativeCount}`);
+  if (nativeCount !== 5) throw new Error(`expected 4 native instrs + B, got ${nativeCount}`);
   assertSame(interp, snap, 'mov/add/sub');
 });
 
@@ -110,7 +112,7 @@ test('register ADD/ORR matches interpreter', () => {
   const init = (c: ArmCore) => { c.st.r[0] = 0x12340000; c.st.r[1] = 0x00005678; };
   const interp = runInterp(prog, 2, init);
   const { snap, nativeCount } = runWasm(prog, init);
-  if (nativeCount !== 2) throw new Error(`expected 2 native, got ${nativeCount}`);
+  if (nativeCount !== 3) throw new Error(`expected 2 native + B, got ${nativeCount}`);
   assertSame(interp, snap, 'add/orr reg');
 });
 
@@ -123,7 +125,7 @@ test('SUBS flags (carry/overflow/zero/neg) match interpreter', () => {
     const init = (c: ArmCore) => { c.st.r[0] = a >>> 0; };
     const interp = runInterp(prog, 1, init);
     const { snap, nativeCount } = runWasm(prog, init);
-    if (nativeCount !== 1) throw new Error(`SUBS not lifted for a=${a}`);
+    if (nativeCount !== 2) throw new Error(`SUBS not lifted for a=${a}`);
     assertSame(interp, snap, `subs ${a}-${b}`);
   }
 });
@@ -146,7 +148,7 @@ test('MVN and immediate-shift MOV match interpreter', () => {
   const init = () => {};
   const interp = runInterp(prog, 2, init);
   const { snap, nativeCount } = runWasm(prog, init);
-  if (nativeCount !== 2) throw new Error(`expected 2 native, got ${nativeCount}`);
+  if (nativeCount !== 3) throw new Error(`expected 2 native + B, got ${nativeCount}`);
   assertSame(interp, snap, 'mvn/lsl');
 });
 
@@ -182,20 +184,32 @@ const ldrPreWb = (rd: number, rn: number, off: number) => (0xe5b00000 | (rn << 1
 
 const WORK = 0x02000000; // EWRAM-ish scratch region in the test bus
 
-test('STR word is lifted natively; word LDR bails (unaligned-rotation safety)', () => {
-  // STR is bit-exact and lifted; the following word LDR is intentionally NOT lifted (it can
-  // require ARM unaligned-read rotation), so the native block must stop after the STR.
+test('STR word + word LDR (native unaligned-rotation) match interpreter', () => {
+  // Both the STR and the word LDR are lifted natively now: the LDR emits the ARM7
+  // unaligned-read rotation as rotr(read32(addr & ~3), 8*(addr & 3)).
   const prog = [
     strImm(0, 1, 0x10),   // mem[r1+0x10] = r0   (native)
-    ldrImm(2, 1, 0x10),   // r2 = mem[...]        (bails)
+    ldrImm(2, 1, 0x10),   // r2 = mem[...]        (native, rotation-exact)
   ];
   const init = (c: ArmCore) => { c.st.r[0] = 0xdeadbeef | 0; c.st.r[1] = WORK; };
-  const { nativeCount } = runWasm(prog, init);
-  if (nativeCount !== 1) throw new Error(`expected STR-only native block (1), got ${nativeCount}`);
-  // And the store itself must be correct vs interpreter after 1 step.
-  const interp = runInterp(prog, 1, init);
-  const { snap } = runWasm([strImm(0, 1, 0x10)], init);
-  assertSame(interp, snap, 'str word native');
+  const interp = runInterp(prog, 2, init);
+  const { snap, nativeCount } = runWasm(prog, init);
+  if (nativeCount !== 3) throw new Error(`expected fully-native STR+LDR+B (3), got ${nativeCount}`);
+  assertSame(interp, snap, 'str+ldr word native');
+});
+
+test('unaligned word LDR rotation matches interpreter for every addr&3', () => {
+  for (const mis of [0, 1, 2, 3]) {
+    const prog = [ldrImm(2, 1, 0)]; // r2 = ldrWord(r1)
+    const init = (c: ArmCore) => { c.st.r[1] = (WORK + 0x200 + mis) >>> 0; };
+    const seed = (bus: RamBus) => bus.write32(WORK + 0x200, 0x11223344);
+    const a = freshCpu(prog, init); seed(a.bus); a.cpu.step();
+    const b = freshCpu(prog, init); seed(b.bus);
+    const rec = new Recompiler(b.bus);
+    const n = rec.tryRunNative(b.cpu);
+    if (n < 1) throw new Error(`unaligned LDR (mis=${mis}) not native`);
+    assertSame(snapshot(a.cpu), snapshot(b.cpu), `ldr rot mis=${mis}`);
+  }
 });
 
 test('STRB/LDRB byte access matches interpreter', () => {
@@ -206,7 +220,7 @@ test('STRB/LDRB byte access matches interpreter', () => {
   const init = (c: ArmCore) => { c.st.r[0] = 0xab; c.st.r[1] = WORK + 0x40; };
   const interp = runInterp(prog, 2, init);
   const { snap, nativeCount } = runWasm(prog, init);
-  if (nativeCount !== 2) throw new Error(`expected 2 native, got ${nativeCount}`);
+  if (nativeCount !== 3) throw new Error(`expected 2 native + B, got ${nativeCount}`);
   assertSame(interp, snap, 'strb/ldrb');
 });
 
@@ -215,7 +229,7 @@ test('post-indexed STR writeback matches interpreter', () => {
   const init = (c: ArmCore) => { c.st.r[0] = 0x11223344; c.st.r[1] = WORK + 0x80; };
   const interp = runInterp(prog, 1, init);
   const { snap, nativeCount } = runWasm(prog, init);
-  if (nativeCount !== 1) throw new Error(`post-idx not lifted`);
+  if (nativeCount !== 2) throw new Error(`post-idx not lifted`);
   assertSame(interp, snap, 'str post writeback');
 });
 
@@ -225,15 +239,11 @@ test('pre-indexed LDR writeback matches interpreter', () => {
     ldrPreWb(2, 1, 0x20), // r2 = mem[r1+0x20]; r1 += 0x20
   ];
   const init = (c: ArmCore) => { c.st.r[0] = 0x55667788; c.st.r[1] = WORK + 0x100; };
-  // The pre-indexed word LDR bails (unaligned-rotation safety), so only the seeding STR is native.
-  const { nativeCount } = runWasm(prog, init);
-  if (nativeCount !== 1) throw new Error(`expected STR-only native (1), got ${nativeCount}`);
-  // Correctness of the full sequence is still guaranteed because the interpreter handles the LDR.
+  // The pre-indexed word LDR (incl. writeback) is now lifted natively.
   const interp = runInterp(prog, 2, init);
-  const full = freshCpu(prog, init);
-  const rec2 = new Recompiler(full.bus);
-  let done = 0; while (done < 2) { const n = rec2.tryRunNative(full.cpu); if (n > 0) done += n; else { full.cpu.step(); done++; } }
-  assertSame(interp, snapshot(full.cpu), 'ldr pre wb via hybrid');
+  const { snap, nativeCount } = runWasm(prog, init);
+  if (nativeCount !== 3) throw new Error(`expected fully-native STR+LDR!+B (3), got ${nativeCount}`);
+  assertSame(interp, snap, 'ldr pre wb native');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

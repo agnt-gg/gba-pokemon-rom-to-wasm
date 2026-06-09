@@ -107,6 +107,22 @@ export class Recompiler {
   /** Count of stale RAM-code blocks invalidated by the self-modifying-code guard. */
   smcInvalidations = 0;
 
+  /** Telemetry: histogram of bail reasons hit during block discovery, keyed "mode:reason". */
+  bailReasons = new Map<string, number>();
+  private recordBail(mode: string, reason?: string) {
+    const k = mode + ':' + (reason || 'unknown');
+    this.bailReasons.set(k, (this.bailReasons.get(k) || 0) + 1);
+  }
+
+  /** Compile-time lift context: lets lifters constant-fold literal-pool loads from immutable ROM. */
+  private liftCtx = {
+    romRead32: (addr: number) => {
+      const region = (addr >>> 24) & 0xff;
+      if (region >= 0x08 && region <= 0x0d) return this.bus.read32(addr >>> 0) >>> 0;
+      return null;
+    },
+  };
+
   /** True if `pc` lies in a writable RAM region whose bytes can change under us (IWRAM 0x03, EWRAM
    *  0x02). ROM (0x08+) and BIOS (0x00) are immutable, so blocks there never need a guard. */
   private isRamCode(pc: number): boolean {
@@ -225,10 +241,16 @@ export class Recompiler {
       // side effects and cannot be verified by naive interpreter replay.
       if ((instr & 0x0c100000) === 0x04000000) hasStore = true; // single transfer, L==0
       if ((instr & 0x0c100000) === 0x04100000) hasLoad = true;  // single transfer, L==1
-      const res = liftArm(cb, instr, cur);
+      const mark = cb.bytes.length;
+      const res = liftArm(cb, instr, cur, this.liftCtx);
       if (res.status === 'bail') {
+        // Roll back any partially-emitted bytes so a late bail can never leave dead code.
+        cb.bytes.length = mark;
+        this.recordBail('A', res.reason);
         break;
       }
+      if (res.mayStore) hasStore = true;
+      if (res.mayLoad) hasLoad = true;
       count++;
       if (res.status === 'endsBlock') {
         endedByBranch = true;
@@ -324,8 +346,15 @@ export class Recompiler {
       else if (top === 0b100 && (instr & 0x0800) !== 0) hasLoad = true;        // Fmt 10/11 LDRH/LDR
       else if ((instr & 0xf800) === 0x4800) hasLoad = true;                    // Fmt 6 LDR PC-rel
       else if (top === 0b010 && (instr & 0x0e00) === 0x0800 && (instr & 0x0200) !== 0) hasLoad = true; // Fmt 7/8 loads
-      const res = liftThumb(cb, instr, cur);
-      if (res.status === 'bail') break;
+      const mark = cb.bytes.length;
+      const res = liftThumb(cb, instr, cur, this.liftCtx);
+      if (res.status === 'bail') {
+        cb.bytes.length = mark;
+        this.recordBail('T', res.reason);
+        break;
+      }
+      if (res.mayStore) hasStore = true;
+      if (res.mayLoad) hasLoad = true;
       count++;
       if (res.status === 'endsBlock') { endedByBranch = true; break; }
       cur = (cur + 2) >>> 0;
