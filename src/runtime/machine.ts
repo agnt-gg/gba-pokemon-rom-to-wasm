@@ -66,6 +66,14 @@ export class GbaMachine {
     this.mem.flash = this.flash;
     this.cpu = new ArmCore(this.mem);
     this.recompiler = new Recompiler(this.mem);
+    // PCs the dispatcher must regain control at; the recompiler's block chaining breaks at these
+    // so machine.step() sees them exactly like on the single-dispatch path:
+    //   - depth-unique BIOS IRQ-return sentinels (BIOS_IRQ_RETURN + d*4)
+    //   - Pokemon Gen3 flash-helper HLE entry (ProgramFlashSectorAndVerify)
+    //   - Ruby/Sapphire RTC battery-check quirk return PCs
+    for (let d = 0; d < 4; d++) this.recompiler.chainStops.add((0x0000013c + d * 4) >>> 0);
+    this.recompiler.chainStops.add(0x081dfa98);
+    for (const p of [0x08009aa6, 0x08009aa8, 0x08009aaa, 0x08009aac]) this.recompiler.chainStops.add(p);
     this.header = parseHeader(rom);
 
     // Ruby/Sapphire/Emerald bit-bang a cartridge GPIO real-time clock at 0x080000C4-C9.

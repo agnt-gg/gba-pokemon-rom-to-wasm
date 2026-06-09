@@ -112,6 +112,11 @@ export class Recompiler {
   /** Count of stale RAM-code blocks invalidated by the self-modifying-code guard. */
   smcInvalidations = 0;
 
+  /** PCs where the machine must regain control (HLE entry points, quirk fixes, IRQ-return
+   *  sentinels). Block chaining stops when the next PC is one of these so machine.step() can
+   *  intercept exactly as it does on the single-step path. Populated by the machine. */
+  chainStops = new Set<number>();
+
   /** Telemetry: histogram of bail reasons hit during block discovery, keyed "mode:reason". */
   bailReasons = new Map<string, number>();
   private recordBail(mode: string, reason?: string) {
@@ -596,13 +601,35 @@ export class Recompiler {
       return block.count;
     }
 
+    // ---- verified fast path with BLOCK CHAINING ----
+    // Registers live in linear memory between chained blocks: syncIn once, run up to a
+    // 256-instruction budget of already-verified blocks back-to-back (the same instruction span
+    // a single max-size block may already cover, so the IRQ guard-band timing model is
+    // unchanged), then syncOut once. This removes per-block sync + dispatch overhead.
+    // The THUMB/ARM mode of the next block is read from the CPSR T bit in linear memory, so
+    // BX / POP{pc} mode switches chain seamlessly.
     this.syncIn(cpu.st);
-    // The block writes the architectural next-instruction address into r15 and returns it.
-    const nextPc = block.fn() >>> 0;
+    const CHAIN_BUDGET = 256;
+    let total = 0;
+    let nextPc = 0;
+    let cur: CompiledBlock = block;
+    for (;;) {
+      nextPc = cur.fn() >>> 0;
+      total += cur.count;
+      if (total >= CHAIN_BUDGET) break;
+      if (cpu.halted) break;                       // a chained store halted the CPU (HALTCNT)
+      if (this.chainStops.has(nextPc)) break;      // machine-level PC intercept
+      const thumbNow = (this.i32[OFF_CPSR >> 2] & 0x20) !== 0;
+      const nb = thumbNow ? this.compileBlockThumb(nextPc) : this.compileBlock(nextPc);
+      if (!nb) break;
+      if (this.verifyFirstRun && !nb.verified) break; // first run must go through the verify gate
+      if (total + nb.count > CHAIN_BUDGET) break;
+      cur = nb;
+    }
     this.syncOut(cpu.st);
     cpu.st.r[15] = nextPc >>> 0;
 
-    this.nativeInstrs += block.count;
-    return block.count;
+    this.nativeInstrs += total;
+    return total;
   }
 }
