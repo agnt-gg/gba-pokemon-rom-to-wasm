@@ -126,17 +126,21 @@ export class GbaPpu {
     if (!hbEn && !vcEn && !vbEn) return Infinity;
     const lyc = (ds >> 8) & 0xff;
     const sc = this.scanlineCycles;
+    const cur = this.vcount;
     let best = Infinity;
     // HBlank: fires at HDRAW_CYCLES within the current scanline (if not already past it).
-    if (hbEn && !this.inHblank && sc < HDRAW_CYCLES) best = Math.min(best, HDRAW_CYCLES - sc);
-    // End-of-scanline events (VCount match at next line, VBlank at line 160). Scan forward up to a
-    // full frame to find the nearest enabled end-of-line event.
+    if (hbEn && !this.inHblank && sc < HDRAW_CYCLES) best = HDRAW_CYCLES - sc;
+    // End-of-scanline events in O(1): k = scanline-ends until target line becomes current.
     const toLineEnd = CYCLES_PER_SCANLINE - sc;
-    for (let k = 0; k < TOTAL_SCANLINES; k++) {
-      const line = (this.vcount + 1 + k) % TOTAL_SCANLINES;
+    if (vcEn && lyc < TOTAL_SCANLINES) {
+      const k = (lyc - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
       const cyc = toLineEnd + k * CYCLES_PER_SCANLINE;
-      if (vcEn && line === lyc) { best = Math.min(best, cyc); break; }
-      if (vbEn && line === SCREEN_H) { best = Math.min(best, cyc); break; }
+      if (cyc < best) best = cyc;
+    }
+    if (vbEn) {
+      const k = (SCREEN_H - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
+      const cyc = toLineEnd + k * CYCLES_PER_SCANLINE;
+      if (cyc < best) best = cyc;
     }
     return best;
   }
@@ -184,12 +188,10 @@ export class GbaPpu {
   cyclesUntilFrameLatch(): number {
     const sc = this.scanlineCycles;
     const toLineEnd = CYCLES_PER_SCANLINE - sc;
-    let best = Infinity;
-    for (let k = 0; k < TOTAL_SCANLINES; k++) {
-      const line = (this.vcount + 1 + k) % TOTAL_SCANLINES;
-      if (line === SCREEN_H || line === 0) { best = toLineEnd + k * CYCLES_PER_SCANLINE; break; }
-    }
-    return best;
+    const cur = this.vcount;
+    const kVb = (SCREEN_H - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
+    const kZero = (0 - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
+    return toLineEnd + (kVb < kZero ? kVb : kZero) * CYCLES_PER_SCANLINE;
   }
 
   // ---- rendering ----

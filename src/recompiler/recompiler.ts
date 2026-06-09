@@ -51,6 +51,12 @@ export interface CompiledBlock {
   guard: number;
   /** byte length covered by the guard checksum (count*2 for THUMB, count*4 for ARM). */
   guardLen: number;
+  /** Page-generation guard (preferred over checksum when the bus exposes page gens):
+   *  pages[i] = encoded page (region<<16 | pageIndex), stamps[i] = generation at compile time. */
+  pages: number[] | null;
+  stamps: number[] | null;
+  /** Set once the first-run differential verification has passed for THIS compilation. */
+  verified: boolean;
   /** the exported function: () -> nextPc. */
   fn: () => number;
 }
@@ -78,7 +84,6 @@ export class Recompiler {
    * it can only be a correct speedup or a safe fallback, never a correctness regression.
    */
   verifyFirstRun = true;
-  private verified = new Set<number>();
   private MAX_CACHE = 8192;
 
   constructor(bus: Bus) {
@@ -141,9 +146,69 @@ export class Recompiler {
     return h | 0;
   }
 
+  /** Build the page-generation guard for a RAM block, or null if the bus has no page gens. */
+  private buildPageGuard(pc: number, len: number): { pages: number[]; stamps: number[] } | null {
+    const m: any = this.bus;
+    const region = (pc >>> 24) & 0xff;
+    let gens: Uint32Array | null = null; let mask = 0;
+    if (region === 0x03 && m.iwramGen) { gens = m.iwramGen; mask = 0x7fff; }
+    else if (region === 0x02 && m.ewramGen) { gens = m.ewramGen; mask = 0x3ffff; }
+    if (!gens) return null;
+    const first = (pc & mask) >>> 8;
+    const last = ((pc + len - 1) & mask) >>> 8;
+    const pages: number[] = []; const stamps: number[] = [];
+    for (let p = first; p <= last; p++) { pages.push((region << 16) | p); stamps.push(gens[p] | 0); }
+    return { pages, stamps };
+  }
+
+  /** Re-stamp a block's page generations (after a checksum proved its bytes are unchanged). */
+  private refreshPageGuard(block: CompiledBlock, pc: number): void {
+    const pg = this.buildPageGuard(pc, block.guardLen);
+    if (pg) { block.pages = pg.pages; block.stamps = pg.stamps; }
+  }
+
+  /** True if every page a block spans still has its compile-time generation (no writes since). */
+  private pageGuardFresh(block: CompiledBlock): boolean {
+    const m: any = this.bus;
+    const pages = block.pages!; const stamps = block.stamps!;
+    for (let i = 0; i < pages.length; i++) {
+      const region = pages[i] >>> 16; const p = pages[i] & 0xffff;
+      const gens: Uint32Array = region === 0x03 ? m.iwramGen : m.ewramGen;
+      if ((gens[p] | 0) !== stamps[i]) return false;
+    }
+    return true;
+  }
+
   // ---- store-block verification helpers ----
   // Snapshot/restore/compare the writable guest RAM regions so store-bearing native blocks can be
   // differentially verified against the reference interpreter on their first execution.
+  private snapPool: any[] = [null, null];
+  /** Pooled snapshotRam: reuses two snapshot buffers (verify is not reentrant) to avoid GC churn. */
+  private snapshotRamPooled(slot: number) {
+    const m: any = this.bus;
+    const io: any = m.io;
+    const ioSrc = io && io.regs ? io.regs : (m.ioRegs ? m.ioRegs : null);
+    let s = this.snapPool[slot];
+    if (!s) {
+      s = this.snapPool[slot] = {
+        iwram: m.iwram ? m.iwram.slice() : null,
+        ewram: m.ewram ? m.ewram.slice() : null,
+        vram: m.vram ? m.vram.slice() : null,
+        palette: m.palette ? m.palette.slice() : null,
+        oam: m.oam ? m.oam.slice() : null,
+        ioRegs: ioSrc ? ioSrc.slice() : null,
+      };
+      return s;
+    }
+    if (s.iwram) s.iwram.set(m.iwram);
+    if (s.ewram) s.ewram.set(m.ewram);
+    if (s.vram) s.vram.set(m.vram);
+    if (s.palette) s.palette.set(m.palette);
+    if (s.oam) s.oam.set(m.oam);
+    if (s.ioRegs && ioSrc) s.ioRegs.set(ioSrc);
+    return s;
+  }
+
   private snapshotRam() {
     const m: any = this.bus;
     const io: any = m.io;
@@ -173,7 +238,14 @@ export class Recompiler {
     const eq = (a: Uint8Array | null, b: Uint8Array | null) => {
       if (!a || !b) return true;
       if (a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      // Native memcmp under Node; 32-bit-word compare in the browser. (The old per-byte JS loop
+      // compared ~390KB per store-block verification.)
+      if (typeof Buffer !== 'undefined') return Buffer.compare(a, b) === 0;
+      const n = a.length >>> 2;
+      const a32 = new Int32Array(a.buffer, a.byteOffset, n);
+      const b32 = new Int32Array(b.buffer, b.byteOffset, n);
+      for (let i = 0; i < n; i++) if (a32[i] !== b32[i]) return false;
+      for (let i = n << 2; i < a.length; i++) if (a[i] !== b[i]) return false;
       return true;
     };
     // Compare only true RAM (not IO regs — IO side effects are intentional and re-applied below).
@@ -215,9 +287,16 @@ export class Recompiler {
   compileBlock(pc: number): CompiledBlock | null {
     const cached = this.cache.get(pc);
     if (cached) {
-      // Self-modifying / relocated code: if this block was lifted from writable RAM, the live bytes
-      // may have been overwritten since. Re-checksum; on mismatch, drop the stale block & recompile.
-      if (cached.guard === 0 || this.checksumBytes(pc, cached.guardLen, false) === cached.guard) return cached;
+      // Self-modifying / relocated code guard. Page generations (O(1)) when available;
+      // otherwise fall back to the byte checksum (O(blockLen)).
+      if (cached.guard === 0) return cached;
+      if (cached.pages && this.pageGuardFresh(cached)) return cached;
+      if (this.checksumBytes(pc, cached.guardLen, false) === cached.guard) {
+        // A write touched the block's page(s) but the code bytes are unchanged (data sharing the
+        // page). Re-stamp the generations so the fast path is hot again, keep the block.
+        if (cached.pages) this.refreshPageGuard(cached, pc);
+        return cached;
+      }
       this.cache.delete(pc);
       this.smcInvalidations++;
     } else if (this.cache.has(pc)) {
@@ -292,7 +371,9 @@ export class Recompiler {
     });
 
     const guardLen = count * 4; // ARM: 4 bytes/instr
-    const guard = this.isRamCode(pc) ? this.checksumBytes(pc, guardLen, false) : 0;
+    const isRam = this.isRamCode(pc);
+    const guard = isRam ? this.checksumBytes(pc, guardLen, false) : 0;
+    const pg = isRam ? this.buildPageGuard(pc, guardLen) : null;
     const block: CompiledBlock = {
       startPc: pc,
       count,
@@ -300,6 +381,9 @@ export class Recompiler {
       hasLoad,
       guard,
       guardLen,
+      pages: pg ? pg.pages : null,
+      stamps: pg ? pg.stamps : null,
+      verified: false,
       fn: instance.exports.block as () => number,
     };
     this.cache.set(pc, block);
@@ -316,7 +400,12 @@ export class Recompiler {
   compileBlockThumb(pc: number): CompiledBlock | null {
     const cached = this.cacheThumb.get(pc);
     if (cached) {
-      if (cached.guard === 0 || this.checksumBytes(pc, cached.guardLen, true) === cached.guard) return cached;
+      if (cached.guard === 0) return cached;
+      if (cached.pages && this.pageGuardFresh(cached)) return cached;
+      if (this.checksumBytes(pc, cached.guardLen, true) === cached.guard) {
+        if (cached.pages) this.refreshPageGuard(cached, pc);
+        return cached;
+      }
       this.cacheThumb.delete(pc);
       this.smcInvalidations++;
     } else if (this.cacheThumb.has(pc)) {
@@ -391,7 +480,9 @@ export class Recompiler {
     });
 
     const guardLen = count * 2; // THUMB: 2 bytes/instr
-    const guard = this.isRamCode(pc) ? this.checksumBytes(pc, guardLen, true) : 0;
+    const isRam = this.isRamCode(pc);
+    const guard = isRam ? this.checksumBytes(pc, guardLen, true) : 0;
+    const pg = isRam ? this.buildPageGuard(pc, guardLen) : null;
     const block: CompiledBlock = {
       startPc: pc,
       count,
@@ -399,6 +490,9 @@ export class Recompiler {
       hasLoad,
       guard,
       guardLen,
+      pages: pg ? pg.pages : null,
+      stamps: pg ? pg.stamps : null,
+      verified: false,
       fn: instance.exports.block as () => number,
     };
     this.cacheThumb.set(pc, block);
@@ -426,8 +520,7 @@ export class Recompiler {
     // Blocks that write guest memory cannot be verified by interpreter replay (replaying would
     // double-apply the stores). Their correctness is covered by the differential unit tests; here
     // we trust the verified lifter and execute directly.
-    const verifyKey = ((cpu.st.thumb ? 0x80000000 : 0) | pc) >>> 0;
-    if (this.verifyFirstRun && !this.verified.has(verifyKey)) {
+    if (this.verifyFirstRun && !block.verified) {
       const snapR = Int32Array.from(cpu.st.r);
       const snapCpsr = cpu.st.cpsr >>> 0;
 
@@ -444,7 +537,7 @@ export class Recompiler {
       // worse, a wrong accepted value. Snapshotting IO+RAM and restoring it before the reference
       // run makes the replay deterministic against the exact state native observed.)
       const needSnap = block.hasStore || block.hasLoad;
-      const memSnap = needSnap ? this.snapshotRam() : null;
+      const memSnap = needSnap ? this.snapshotRamPooled(0) : null;
 
       this.syncIn(cpu.st);
       const nextPc = block.fn() >>> 0;
@@ -455,7 +548,7 @@ export class Recompiler {
       // Only compare memory bytes for STORE blocks; load-only blocks don't mutate RAM so the
       // reference replay must see the pre-block snapshot (restore it) but we don't diff memory.
       if (memSnap) {
-        if (block.hasStore) nativeMem = this.snapshotRam();
+        if (block.hasStore) nativeMem = this.snapshotRamPooled(1);
         this.restoreRam(memSnap);
       }
 
@@ -498,7 +591,7 @@ export class Recompiler {
       }
       // Passed. For store blocks, RAM currently holds the reference result which is byte-identical
       // to the native result, so no further action is needed.
-      this.verified.add(verifyKey);
+      block.verified = true;
       this.nativeInstrs += block.count;
       return block.count;
     }

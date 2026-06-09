@@ -82,9 +82,24 @@ export class GbaTimers {
       if (countUp) continue; // ticked by previous timer's overflow only
       const ps = PRESCALER[ctrl & 3];
       this.subcycle[ch] += cycles;
-      while (this.subcycle[ch] >= ps) {
-        this.subcycle[ch] -= ps;
-        this.tick(ch, ctrl);
+      let ticks = (this.subcycle[ch] / ps) | 0;
+      if (ticks > 0) {
+        this.subcycle[ch] -= ticks * ps;
+        // Bulk-advance: jump straight to each overflow instead of ticking per cycle.
+        // (Timer0 runs at prescaler 1 as the audio sample timer — the old per-cycle loop
+        //  executed ~280k JS iterations per frame.)
+        while (ticks > 0) {
+          const toOverflow = 0x10000 - this.counter[ch];
+          if (ticks < toOverflow) { this.counter[ch] += ticks; ticks = 0; break; }
+          ticks -= toOverflow;
+          this.counter[ch] = this.reload[ch];
+          this.onOverflow(ch);
+          if (ctrl & 0x40) this.requestIrq(IRQ_TIMER[ch]);
+          if (ch < 3) {
+            const nextCtrl = this.io.get16(this.CNT_H[ch + 1]);
+            if (this.enabled[ch + 1] && (nextCtrl & 0x4)) this.cascadeTick(ch + 1, nextCtrl);
+          }
+        }
       }
       this.io.set16(this.CNT_L[ch], this.counter[ch] & 0xffff);
     }

@@ -43,6 +43,15 @@ export class GbaMemory implements Bus {
   // Raw IO register backing store for simple registers the IoBus doesn't intercept.
   ioRegs = new Uint8Array(0x400);
 
+  // ---- self-modifying-code page generations ----
+  // Every write to IWRAM/EWRAM stamps its 256-byte page with a fresh generation number. The
+  // recompiler records the generations of the pages a RAM block spans at compile time and
+  // compares them on every dispatch — an O(pages) (≈O(1)) exactness guard that replaces the
+  // old O(blockLen) FNV re-checksum on every cache hit.
+  iwramGen = new Uint32Array(0x8000 >>> 8);   // 128 pages
+  ewramGen = new Uint32Array(0x40000 >>> 8);  // 1024 pages
+  genCounter = 1;
+
   loadRom(bytes: Uint8Array): void { this.rom = bytes; }
 
   /** Provide a tiny BIOS stub so reads from the BIOS region don't fault. Real SWIs are HLE'd. */
@@ -102,8 +111,8 @@ export class GbaMemory implements Bus {
     addr >>>= 0; value &= 0xff;
     const region = (addr >>> 24) & 0xff;
     switch (region) {
-      case 0x02: this.ewram[addr & 0x3ffff] = value; break;
-      case 0x03: this.iwram[addr & 0x7fff] = value; break;
+      case 0x02: { const o = addr & 0x3ffff; this.ewram[o] = value; this.ewramGen[o >>> 8] = ++this.genCounter; break; }
+      case 0x03: { const o = addr & 0x7fff; this.iwram[o] = value; this.iwramGen[o >>> 8] = ++this.genCounter; break; }
       case 0x04:
         if (this.io) this.io.writeIo8(addr & 0xffffff, value);
         else this.ioRegs[addr & 0x3ff] = value;
