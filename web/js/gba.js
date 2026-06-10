@@ -5790,6 +5790,14 @@ var GbaAudio = class {
   fifoB = new PcmFifo();
   left = 0;
   right = 0;
+  /**
+   * Effective output sample rate. Nominally OUT_HZ, but the frontend nudges it ±2% based on its
+   * audio-queue depth (dynamic rate control). The producer (emulated time) and the consumer
+   * (the real audio device clock) are different clocks; without feedback the queue drifts —
+   * monotonically growing latency (audio lagging gameplay) or underruns. A ±2% rate trim is
+   * inaudible and locks the queue to a fixed latency.
+   */
+  outHz = OUT_HZ;
   output = [];
   outRead = 0;
   // index into output; avoids O(n) splice/shift on every drain
@@ -5838,7 +5846,7 @@ var GbaAudio = class {
   /** Advance audio output resampling by CPU cycles. Call once per CPU/hardware step. */
   step(cycles) {
     if ((this.io.get16(132) & 128) === 0) return;
-    this.sampleAcc += cycles * OUT_HZ;
+    this.sampleAcc += cycles * this.outHz;
     while (this.sampleAcc >= CPU_HZ) {
       this.sampleAcc -= CPU_HZ;
       let l = this.left, r = this.right;
@@ -6934,6 +6942,11 @@ var DebugPanel = class {
         <div class="r"><b>DMA3</b><span>${hx2(g16(67109086), 4)}</span></div>
         <div class="r"><b>DMA0</b><span>${hx2(g16(67109050), 4)}</span></div>
       </div>
+      <h4>Audio</h4>
+      <div class="dbg-stat">
+        <div class="r"><b>queue</b><span>${this.fe.audio ? this.fe.audio.queuedFrames + " fr \xB7 " + (this.fe.audio.queuedFrames / 44100 * 1e3).toFixed(0) + " ms" : "\u2014"}</span></div>
+        <div class="r"><b>APU rate</b><span>${this.m.audio ? this.m.audio.outHz.toFixed(0) + " Hz" : "\u2014"}</span></div>
+      </div>
       <h4>Input</h4>
       <div class="dbg-stat"><div class="r" style="grid-column:1/-1"><b>pressed</b><span>${pressed}</span></div></div>
       <h4>Palette \xB7 BG 0-255 then OBJ 256-511</h4>
@@ -7035,6 +7048,10 @@ var BrowserAudioSink = class {
   stop() {
     this.enabled = false;
     this.readIdx = this.writeIdx = this.queued = 0;
+  }
+  /** Stereo frames currently queued for the audio device (latency = queuedFrames / 44100 s). */
+  get queuedFrames() {
+    return this.queued >> 1;
   }
   push(samples) {
     if (!this.enabled || !samples.length) return;
@@ -7158,7 +7175,7 @@ var Frontend = class {
     const dt = t - this.lastT;
     this.lastT = t;
     this.acc += dt;
-    const frameMs = 1e3 / 60;
+    const frameMs = 1e3 / (16777216 / 280896);
     let budget = Math.min(8, Math.floor(this.acc / frameMs * this.speed));
     if (budget < 1 && this.acc >= frameMs) budget = 1;
     for (let i = 0; i < budget; i++) {
@@ -7175,6 +7192,13 @@ var Frontend = class {
     if (budget > 0) {
       this.blit();
       this.watchdog();
+    }
+    if (this.audio.enabled && this.machine && this.speed === 1) {
+      const TARGET = 4096;
+      const err = Math.max(-1, Math.min(1, (TARGET - this.audio.queuedFrames) / TARGET));
+      this.machine.audio.outHz = 44100 * (1 + 0.02 * err);
+    } else if (this.machine) {
+      this.machine.audio.outHz = 44100;
     }
     this.frameCounter;
     this.fpsT += dt;

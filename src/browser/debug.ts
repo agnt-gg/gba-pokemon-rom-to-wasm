@@ -466,6 +466,11 @@ export class DebugPanel {
         <div class="r"><b>DMA3</b><span>${hx(g16(0x40000de), 4)}</span></div>
         <div class="r"><b>DMA0</b><span>${hx(g16(0x40000ba), 4)}</span></div>
       </div>
+      <h4>Audio</h4>
+      <div class="dbg-stat">
+        <div class="r"><b>queue</b><span>${this.fe.audio ? this.fe.audio.queuedFrames + ' fr · ' + ((this.fe.audio.queuedFrames / 44100) * 1000).toFixed(0) + ' ms' : '—'}</span></div>
+        <div class="r"><b>APU rate</b><span>${this.m.audio ? this.m.audio.outHz.toFixed(0) + ' Hz' : '—'}</span></div>
+      </div>
       <h4>Input</h4>
       <div class="dbg-stat"><div class="r" style="grid-column:1/-1"><b>pressed</b><span>${pressed}</span></div></div>
       <h4>Palette · BG 0-255 then OBJ 256-511</h4>

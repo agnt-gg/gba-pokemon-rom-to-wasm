@@ -42,6 +42,15 @@ export class GbaAudio {
   left = 0;
   right = 0;
 
+  /**
+   * Effective output sample rate. Nominally OUT_HZ, but the frontend nudges it ±2% based on its
+   * audio-queue depth (dynamic rate control). The producer (emulated time) and the consumer
+   * (the real audio device clock) are different clocks; without feedback the queue drifts —
+   * monotonically growing latency (audio lagging gameplay) or underruns. A ±2% rate trim is
+   * inaudible and locks the queue to a fixed latency.
+   */
+  outHz = OUT_HZ;
+
   private output: number[] = [];
   private outRead = 0; // index into output; avoids O(n) splice/shift on every drain
   private sampleAcc = 0;
@@ -89,7 +98,7 @@ export class GbaAudio {
   /** Advance audio output resampling by CPU cycles. Call once per CPU/hardware step. */
   step(cycles: number): void {
     if ((this.io.get16(0x084) & 0x80) === 0) return; // SOUNDCNT_X master enable
-    this.sampleAcc += cycles * OUT_HZ;
+    this.sampleAcc += cycles * this.outHz;
     while (this.sampleAcc >= CPU_HZ) {
       this.sampleAcc -= CPU_HZ;
       let l = this.left, r = this.right;

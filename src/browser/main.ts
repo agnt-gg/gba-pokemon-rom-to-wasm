@@ -74,6 +74,8 @@ class BrowserAudioSink {
     this.enabled = true;
   }
   stop() { this.enabled = false; this.readIdx = this.writeIdx = this.queued = 0; }
+  /** Stereo frames currently queued for the audio device (latency = queuedFrames / 44100 s). */
+  get queuedFrames(): number { return this.queued >> 1; }
   push(samples: Float32Array) {
     if (!this.enabled || !samples.length) return;
     for (let i = 0; i < samples.length; i++) this.pushSample(samples[i]);
@@ -187,7 +189,12 @@ class Frontend {
     const dt = t - this.lastT; this.lastT = t;
     // Target 60 fps emulated; speed multiplies frames per real second.
     this.acc += dt;
-    const frameMs = 1000 / 60;
+    // EXACT GBA frame rate: 16,777,216 Hz / 280,896 cycles-per-frame = 59.7275 fps.
+    // Pacing at a rounded 60 fps made the emulator produce +0.456% more emulated time (and thus
+    // +0.456% more audio samples) than real time — the audio queue grew ~0.27 s of latency per
+    // minute until the ring capped, which players observed as music drifting out of sync until a
+    // pause/unpause drained the queue.
+    const frameMs = 1000 / (16777216 / 280896);
     let budget = Math.min(8, Math.floor((this.acc / frameMs) * this.speed));
     if (budget < 1 && this.acc >= frameMs) budget = 1;
     for (let i = 0; i < budget; i++) {
@@ -202,6 +209,17 @@ class Frontend {
       if (this.acc < 0) this.acc = 0;
     }
     if (budget > 0) { this.blit(); this.watchdog(); }
+    // --- audio dynamic rate control ---
+    // Lock the sink queue to ~93 ms by trimming the APU output rate ±2% (inaudible). This absorbs
+    // every residual clock mismatch: display refresh != 60 Hz, audio-device crystal vs
+    // performance.now() skew, rAF jitter, and pause/resume transients.
+    if (this.audio.enabled && this.machine && this.speed === 1) {
+      const TARGET = 4096; // stereo frames ≈ 93 ms at 44.1 kHz
+      const err = Math.max(-1, Math.min(1, (TARGET - this.audio.queuedFrames) / TARGET));
+      this.machine.audio.outHz = 44100 * (1 + 0.02 * err);
+    } else if (this.machine) {
+      this.machine.audio.outHz = 44100;
+    }
     // FPS meter
     this.frameCounter; this.fpsT += dt;
     if (this.fpsT >= 500) { this.onFps(Math.round((budget > 0 ? 1000 / (frameMs / this.speed) : 0))); this.fpsT = 0; }
