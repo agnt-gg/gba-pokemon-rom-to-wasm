@@ -1440,6 +1440,7 @@ var ArmCore = class {
 
 // src/recompiler/wasm_encoder.ts
 var I32 = 127;
+var I64 = 126;
 var VOID = 64;
 var OP = {
   unreachable: 0,
@@ -1503,6 +1504,10 @@ var OP = {
   i64_add: 124,
   i64_mul: 126,
   i64_and: 131,
+  i64_or: 132,
+  i64_xor: 133,
+  i64_sub: 125,
+  i64_eqz: 80,
   i64_shr_u: 136,
   i64_shl: 134
 };
@@ -1734,6 +1739,7 @@ var CodeBuilder = class {
 // src/recompiler/abi.ts
 var REG_BASE = 0;
 var OFF_CPSR = 64;
+var OFF_CYCLES = 68;
 var OFF_NF = 72;
 var OFF_ZF = 76;
 var OFF_CF = 80;
@@ -1755,19 +1761,22 @@ var HOST_IMPORT_ORDER = ["read8", "read16", "read32", "write8", "write16", "writ
 var L_A = 0;
 var L_B = 1;
 var L_RES = 2;
-function loadReg(cb, n, pcPlus8) {
+var L_T = 3;
+var L_64 = 4;
+var RESERVED_LOCALS = [
+  { count: 4, type: I32 },
+  // L_A, L_B, L_RES, L_T
+  { count: 1, type: I64 }
+  // L_64
+];
+var FLAG_T_BIT = 32;
+function loadReg(cb, n, pcRead) {
   if (n === 15) {
-    cb.i32_const(pcPlus8 | 0);
+    cb.i32_const(pcRead | 0);
     return cb;
   }
   cb.i32_const(regOff(n)).i32_load(0);
   return cb;
-}
-function storeReg(cb, n) {
-  cb.local_set(L_RES);
-  cb.i32_const(regOff(n));
-  cb.local_get(L_RES);
-  cb.i32_store(0);
 }
 function setFlagZNfromRes(cb) {
   cb.i32_const(OFF_ZF);
@@ -1777,25 +1786,227 @@ function setFlagZNfromRes(cb) {
   cb.local_get(L_RES).i32_const(0).op(OP.i32_lt_s);
   cb.i32_store(0);
 }
-function setC(cb, pushC) {
-  cb.i32_const(OFF_CF);
-  pushC(cb);
-  cb.i32_store(0);
-}
-function setV(cb, pushV) {
-  cb.i32_const(OFF_VF);
-  pushV(cb);
+function setFlag(cb, off, push) {
+  cb.i32_const(off);
+  push(cb);
   cb.i32_store(0);
 }
 function armImm(instr) {
   const imm = instr & 255;
   const rot = (instr >> 8 & 15) * 2;
-  return (imm >>> rot | imm << 32 - rot) >>> 0;
+  return rot === 0 ? imm : (imm >>> rot | imm << 32 - rot) >>> 0;
 }
-function liftArm(cb, instr, pc) {
+function emitLdrWord(cb, addrLocal) {
+  cb.local_get(addrLocal).i32_const(-4).op(OP.i32_and).call(HOST.read32);
+  cb.local_get(addrLocal).i32_const(3).op(OP.i32_and).i32_const(3).op(OP.i32_shl);
+  cb.op(OP.i32_rotr);
+}
+function emitSetThumbBitFromLocal(cb, local) {
+  cb.i32_const(OFF_CPSR);
+  cb.i32_const(OFF_CPSR).i32_load(0).i32_const(~FLAG_T_BIT).op(OP.i32_and);
+  cb.local_get(local).i32_const(1).op(OP.i32_and).i32_const(5).op(OP.i32_shl);
+  cb.op(OP.i32_or);
+  cb.i32_store(0);
+}
+function emitSignExt(cb, bits) {
+  cb.i32_const(32 - bits).op(OP.i32_shl).i32_const(32 - bits).op(OP.i32_shr_s);
+}
+function emitCondArm(cb, cond) {
+  const N = () => cb.i32_const(OFF_NF).i32_load(0);
+  const Z = () => cb.i32_const(OFF_ZF).i32_load(0);
+  const C = () => cb.i32_const(OFF_CF).i32_load(0);
+  const V = () => cb.i32_const(OFF_VF).i32_load(0);
+  switch (cond) {
+    case 0:
+      Z();
+      break;
+    case 1:
+      Z();
+      cb.op(OP.i32_eqz);
+      break;
+    case 2:
+      C();
+      break;
+    case 3:
+      C();
+      cb.op(OP.i32_eqz);
+      break;
+    case 4:
+      N();
+      break;
+    case 5:
+      N();
+      cb.op(OP.i32_eqz);
+      break;
+    case 6:
+      V();
+      break;
+    case 7:
+      V();
+      cb.op(OP.i32_eqz);
+      break;
+    case 8:
+      C();
+      Z().op(OP.i32_eqz);
+      cb.op(OP.i32_and);
+      break;
+    case 9:
+      C().op(OP.i32_eqz);
+      Z();
+      cb.op(OP.i32_or);
+      break;
+    case 10:
+      N();
+      V();
+      cb.op(OP.i32_eq);
+      break;
+    case 11:
+      N();
+      V();
+      cb.op(OP.i32_ne);
+      break;
+    case 12:
+      Z().op(OP.i32_eqz);
+      N();
+      V();
+      cb.op(OP.i32_eq);
+      cb.op(OP.i32_and);
+      break;
+    case 13:
+      Z();
+      N();
+      V();
+      cb.op(OP.i32_ne);
+      cb.op(OP.i32_or);
+      break;
+    default:
+      cb.i32_const(1);
+      break;
+  }
+}
+function liftArm(cb, instr, pc, ctx) {
   const cond = instr >>> 28 & 15;
-  if (cond !== 14) return { status: "bail" };
+  if (cond === 15) return { status: "bail", reason: "cond-nv" };
+  if (cond === 14) return liftArmBody(cb, instr, pc, ctx);
+  const inner = new CodeBuilder();
+  const r = liftArmBody(inner, instr, pc, ctx);
+  if (r.status === "bail") return r;
+  emitCondArm(cb, cond);
+  cb.if_();
+  cb.bytes.push(...inner.bytes);
+  if (r.status === "endsBlock") {
+    cb.else_();
+    cb.i32_const(regOff(15)).i32_const(pc + 4 >>> 0 | 0).i32_store(0);
+  }
+  cb.end();
+  if (r.status === "endsBlock") {
+    return { status: "endsBlock", isCall: r.isCall, mayLoad: r.mayLoad, mayStore: r.mayStore };
+  }
+  return r;
+}
+function liftArmBody(cb, instr, pc, ctx) {
   const pcPlus8 = pc + 8 >>> 0;
+  const pcPlus12 = pc + 12 >>> 0;
+  if ((instr & 268435440) === 19922704) {
+    const rn = instr & 15;
+    if (rn === 15) return { status: "bail", reason: "bx-pc" };
+    loadReg(cb, rn, pcPlus8).local_set(L_A);
+    emitSetThumbBitFromLocal(cb, L_A);
+    cb.local_get(L_A).i32_const(1).op(OP.i32_and);
+    cb.if_();
+    cb.i32_const(regOff(15)).local_get(L_A).i32_const(-2).op(OP.i32_and).i32_store(0);
+    cb.else_();
+    cb.i32_const(regOff(15)).local_get(L_A).i32_const(-4).op(OP.i32_and).i32_store(0);
+    cb.end();
+    return { status: "endsBlock" };
+  }
+  if ((instr & 201326592) === 0) {
+    if ((instr & 264241392) === 144) {
+      const rd = instr >>> 16 & 15;
+      const rn = instr >>> 12 & 15;
+      const rs = instr >>> 8 & 15;
+      const rm = instr & 15;
+      const accumulate = (instr & 2097152) !== 0;
+      const setFlags = (instr & 1048576) !== 0;
+      if (rd === 15 || rn === 15 || rs === 15 || rm === 15) return { status: "bail", reason: "mul-pc" };
+      loadReg(cb, rm, pcPlus8);
+      loadReg(cb, rs, pcPlus8);
+      cb.op(OP.i32_mul);
+      if (accumulate) {
+        loadReg(cb, rn, pcPlus8);
+        cb.op(OP.i32_add);
+      }
+      cb.local_set(L_RES);
+      cb.i32_const(regOff(rd)).local_get(L_RES).i32_store(0);
+      if (setFlags) setFlagZNfromRes(cb);
+      return { status: "ok" };
+    }
+    if ((instr & 260047088) === 8388752) {
+      const rdHi = instr >>> 16 & 15;
+      const rdLo = instr >>> 12 & 15;
+      const rs = instr >>> 8 & 15;
+      const rm = instr & 15;
+      const signed = (instr & 4194304) !== 0;
+      const accumulate = (instr & 2097152) !== 0;
+      const setFlags = (instr & 1048576) !== 0;
+      if (rdHi === 15 || rdLo === 15 || rs === 15 || rm === 15) return { status: "bail", reason: "mull-pc" };
+      const ext = signed ? OP.i64_extend_i32_s : OP.i64_extend_i32_u;
+      loadReg(cb, rm, pcPlus8);
+      cb.op(ext);
+      loadReg(cb, rs, pcPlus8);
+      cb.op(ext);
+      cb.op(OP.i64_mul);
+      if (accumulate) {
+        loadReg(cb, rdHi, pcPlus8);
+        cb.op(OP.i64_extend_i32_u);
+        cb.i64_const(32n).op(OP.i64_shl);
+        loadReg(cb, rdLo, pcPlus8);
+        cb.op(OP.i64_extend_i32_u);
+        cb.op(OP.i64_or);
+        cb.op(OP.i64_add);
+      }
+      cb.local_set(L_64);
+      cb.i32_const(regOff(rdLo)).local_get(L_64).op(OP.i32_wrap_i64).i32_store(0);
+      cb.i32_const(regOff(rdHi)).local_get(L_64).i64_const(32n).op(OP.i64_shr_u).op(OP.i32_wrap_i64).i32_store(0);
+      if (setFlags) {
+        setFlag(cb, OFF_NF, (b) => b.local_get(L_64).i64_const(32n).op(OP.i64_shr_u).op(OP.i32_wrap_i64).i32_const(0).op(OP.i32_lt_s));
+        setFlag(cb, OFF_ZF, (b) => b.local_get(L_64).op(OP.i64_eqz));
+      }
+      return { status: "ok" };
+    }
+    if ((instr & 263196656) === 16777360) {
+      const rn = instr >>> 16 & 15;
+      const rd = instr >>> 12 & 15;
+      const rm = instr & 15;
+      const byte = (instr & 4194304) !== 0;
+      if (rn === 15 || rd === 15 || rm === 15) return { status: "bail", reason: "swp-pc" };
+      loadReg(cb, rn, pcPlus8).local_set(L_A);
+      if (byte) {
+        cb.local_get(L_A).call(HOST.read8).local_set(L_B);
+        cb.local_get(L_A);
+        loadReg(cb, rm, pcPlus8);
+        cb.call(HOST.write8);
+      } else {
+        emitLdrWord(cb, L_A);
+        cb.local_set(L_B);
+        cb.local_get(L_A).i32_const(-4).op(OP.i32_and);
+        loadReg(cb, rm, pcPlus8);
+        cb.call(HOST.write32);
+      }
+      cb.i32_const(regOff(rd)).local_get(L_B).i32_store(0);
+      return { status: "ok", mayLoad: true, mayStore: true };
+    }
+    if ((instr & 234881168) === 144 && (instr & 96) !== 0) {
+      return liftHalfXfer(cb, instr, pcPlus8);
+    }
+    return liftDataProc(cb, instr, pc, pcPlus8);
+  }
+  if ((instr & 201326592) === 67108864) {
+    return liftSingleXfer(cb, instr, pc, pcPlus8, pcPlus12, ctx);
+  }
+  if ((instr & 234881024) === 134217728) {
+    return liftBlockXfer(cb, instr, pcPlus12);
+  }
   if ((instr & 234881024) === 167772160) {
     const link = (instr & 16777216) !== 0;
     let off = instr & 16777215;
@@ -1803,201 +2014,513 @@ function liftArm(cb, instr, pc) {
     const target = pcPlus8 + (off << 2) >>> 0;
     if (link) {
       cb.i32_const(regOff(14));
-      cb.i32_const(pc + 4 >>> 0);
+      cb.i32_const(pc + 4 >>> 0 | 0);
       cb.i32_store(0);
     }
     cb.i32_const(regOff(15));
-    cb.i32_const(target);
+    cb.i32_const(target | 0);
     cb.i32_store(0);
     return { status: "endsBlock", staticTarget: target, isCall: link };
   }
-  if ((instr & 201326592) === 67108864) {
-    const I = (instr & 33554432) !== 0;
-    if (I) return { status: "bail" };
-    const P = (instr & 16777216) !== 0;
-    const U = (instr & 8388608) !== 0;
-    const B = (instr & 4194304) !== 0;
-    const W = (instr & 2097152) !== 0;
-    const L = (instr & 1048576) !== 0;
-    const Rn = instr >>> 16 & 15;
-    const Rd = instr >>> 12 & 15;
-    const off12 = instr & 4095;
-    if (Rn === 15 || Rd === 15) return { status: "bail" };
-    loadReg(cb, Rn, pcPlus8).local_set(L_A);
-    const applyOffset = (b) => {
-      b.local_get(L_A);
-      b.i32_const(off12);
-      b.op(U ? OP.i32_add : OP.i32_sub);
-    };
-    if (P) {
-      applyOffset(cb);
-      cb.local_set(L_A);
+  if ((instr & 251658240) === 251658240) return { status: "bail", reason: "swi" };
+  return { status: "bail", reason: "arm-undecoded" };
+}
+function liftDataProc(cb, instr, pc, pcPlus8) {
+  const I = (instr & 33554432) !== 0;
+  const opcode = instr >>> 21 & 15;
+  const S = (instr & 1048576) !== 0;
+  const Rn = instr >>> 16 & 15;
+  const Rd = instr >>> 12 & 15;
+  if (!S && opcode >= 8 && opcode <= 11) return { status: "bail", reason: "psr" };
+  if (Rd === 15) return { status: "bail", reason: "dp-rd15" };
+  const isLogical = (op) => op === 0 || op === 1 || op === 8 || op === 9 || op === 12 || op === 13 || op === 14 || op === 15;
+  const isTest = (op) => op >= 8 && op <= 11;
+  const needShifterCarry = (S || isTest(opcode)) && isLogical(opcode);
+  const regShift = !I && (instr & 16) !== 0;
+  const pcRead = regShift ? pc + 12 >>> 0 : pcPlus8;
+  let carryMode = 0;
+  let carryConst = 0;
+  let carryExpr = null;
+  if (I) {
+    const rot = (instr >> 8 & 15) * 2;
+    const val = armImm(instr);
+    cb.i32_const(val | 0);
+    if (rot !== 0) {
+      carryMode = 1;
+      carryConst = val >>> 31 & 1;
     }
-    if (L) {
-      if (!B) return { status: "bail" };
-      cb.local_get(L_A);
-      cb.call(HOST.read8);
-      storeReg(cb, Rd);
+  } else {
+    const rm = instr & 15;
+    const stype = instr >>> 5 & 3;
+    if (regShift) {
+      const rs = instr >>> 8 & 15;
+      if (rs === 15) return { status: "bail", reason: "regshift-rs15" };
+      if (needShifterCarry) return { status: "bail", reason: "regshift-carry" };
+      loadReg(cb, rm, pcRead).local_set(L_T);
+      loadReg(cb, rs, pcRead).i32_const(255).op(OP.i32_and).local_set(L_B);
+      emitShiftRegValue(cb, stype);
+      cb.local_get(L_T);
     } else {
-      cb.local_get(L_A);
-      loadReg(cb, Rd, pcPlus8);
-      cb.call(B ? HOST.write8 : HOST.write32);
-    }
-    if (P && W) {
-      cb.local_get(L_A);
-      storeReg(cb, Rn);
-    } else if (!P) {
-      cb.local_get(L_A);
-      cb.i32_const(off12);
-      cb.op(U ? OP.i32_add : OP.i32_sub);
-      storeReg(cb, Rn);
-    }
-    return { status: "ok" };
-  }
-  if ((instr & 201326592) === 0) {
-    const I = (instr & 33554432) !== 0;
-    const opcode = instr >>> 21 & 15;
-    const S = (instr & 1048576) !== 0;
-    const Rn = instr >>> 16 & 15;
-    const Rd = instr >>> 12 & 15;
-    if (!I && (instr & 240) === 144) return { status: "bail" };
-    if (!I && (instr & 16) !== 0) return { status: "bail" };
-    if (Rd === 15) return { status: "bail" };
-    const pushOp2 = (b) => {
-      if (I) {
-        b.i32_const(armImm(instr) | 0);
-      } else {
-        const Rm = instr & 15;
-        const shamt = instr >>> 7 & 31;
-        const stype = instr >>> 5 & 3;
-        loadReg(b, Rm, pcPlus8);
-        if (shamt === 0 && stype === 0) {
-        } else if (stype === 0) {
-          b.i32_const(shamt).op(OP.i32_shl);
-        } else if (stype === 1) {
-          b.i32_const(shamt === 0 ? 32 : shamt).op(OP.i32_shr_u);
-        } else if (stype === 2) {
-          b.i32_const(shamt === 0 ? 31 : shamt).op(OP.i32_shr_s);
+      const amount = instr >>> 7 & 31;
+      loadReg(cb, rm, pcRead).local_set(L_T);
+      if (stype === 0) {
+        if (amount === 0) {
+          cb.local_get(L_T);
         } else {
-          if (shamt === 0) return;
-          b.i32_const(shamt).op(OP.i32_rotr);
+          cb.local_get(L_T).i32_const(amount).op(OP.i32_shl);
+          carryMode = 2;
+          carryExpr = (b) => b.local_get(L_T).i32_const(32 - amount).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
+        }
+      } else if (stype === 1) {
+        if (amount === 0) {
+          cb.i32_const(0);
+          carryMode = 2;
+          carryExpr = (b) => b.local_get(L_T).i32_const(31).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
+        } else {
+          cb.local_get(L_T).i32_const(amount).op(OP.i32_shr_u);
+          carryMode = 2;
+          carryExpr = (b) => b.local_get(L_T).i32_const(amount - 1).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
+        }
+      } else if (stype === 2) {
+        if (amount === 0) {
+          cb.local_get(L_T).i32_const(31).op(OP.i32_shr_s);
+          carryMode = 2;
+          carryExpr = (b) => b.local_get(L_T).i32_const(31).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
+        } else {
+          cb.local_get(L_T).i32_const(amount).op(OP.i32_shr_s);
+          carryMode = 2;
+          carryExpr = (b) => b.local_get(L_T).i32_const(amount - 1).op(OP.i32_shr_s).i32_const(1).op(OP.i32_and);
+        }
+      } else {
+        if (amount === 0) {
+          cb.i32_const(OFF_CF).i32_load(0).i32_const(31).op(OP.i32_shl);
+          cb.local_get(L_T).i32_const(1).op(OP.i32_shr_u);
+          cb.op(OP.i32_or);
+          carryMode = 2;
+          carryExpr = (b) => b.local_get(L_T).i32_const(1).op(OP.i32_and);
+        } else {
+          cb.local_get(L_T).i32_const(amount).op(OP.i32_rotr);
+          carryMode = 2;
+          carryExpr = (b) => b.local_get(L_T).i32_const(amount - 1).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
         }
       }
-    };
-    if (!I) {
-      const stype = instr >>> 5 & 3;
-      const shamt = instr >>> 7 & 31;
-      if (stype === 3 && shamt === 0) return { status: "bail" };
     }
-    const isLogical = (op) => op === 0 || op === 1 || op === 8 || op === 9 || op === 12 || op === 13 || op === 14 || op === 15;
-    const isTest = (op) => op >= 8 && op <= 11;
-    switch (opcode) {
-      case 0:
-      // AND
-      case 8:
-        loadReg(cb, Rn, pcPlus8);
-        pushOp2(cb);
-        cb.op(OP.i32_and);
-        cb.local_set(L_RES);
-        break;
-      case 1:
-      // EOR
-      case 9:
-        loadReg(cb, Rn, pcPlus8);
-        pushOp2(cb);
-        cb.op(OP.i32_xor);
-        cb.local_set(L_RES);
-        break;
-      case 12:
-        loadReg(cb, Rn, pcPlus8);
-        pushOp2(cb);
-        cb.op(OP.i32_or);
-        cb.local_set(L_RES);
-        break;
-      case 14:
-        loadReg(cb, Rn, pcPlus8);
-        pushOp2(cb);
-        cb.i32_const(-1).op(OP.i32_xor);
-        cb.op(OP.i32_and);
-        cb.local_set(L_RES);
-        break;
-      case 13:
-        pushOp2(cb);
-        cb.local_set(L_RES);
-        break;
-      case 15:
-        pushOp2(cb);
-        cb.i32_const(-1).op(OP.i32_xor);
-        cb.local_set(L_RES);
-        break;
-      case 4:
-      // ADD
-      case 11:
-        loadReg(cb, Rn, pcPlus8).local_set(L_A);
-        pushOp2(cb);
-        cb.local_set(L_B);
-        cb.local_get(L_A).local_get(L_B).op(OP.i32_add).local_set(L_RES);
-        break;
-      case 2:
-      // SUB
-      case 10:
-        loadReg(cb, Rn, pcPlus8).local_set(L_A);
-        pushOp2(cb);
-        cb.local_set(L_B);
-        cb.local_get(L_A).local_get(L_B).op(OP.i32_sub).local_set(L_RES);
-        break;
-      case 3:
-        loadReg(cb, Rn, pcPlus8).local_set(L_A);
-        pushOp2(cb);
-        cb.local_set(L_B);
-        cb.local_get(L_B).local_get(L_A).op(OP.i32_sub).local_set(L_RES);
-        break;
-      default:
-        return { status: "bail" };
-    }
-    if (!isTest(opcode)) {
-      cb.local_get(L_RES);
-      storeReg(cb, Rd);
-    }
-    if (S || isTest(opcode)) {
-      setFlagZNfromRes(cb);
-      if (opcode === 4 || opcode === 11) {
-        setC(cb, (b) => {
-          b.local_get(L_RES).local_get(L_A).op(OP.i32_lt_u);
-        });
-        setV(cb, (b) => {
-          b.local_get(L_A).local_get(L_B).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
-          b.local_get(L_A).local_get(L_RES).op(OP.i32_xor);
-          b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
-        });
-      } else if (opcode === 2 || opcode === 10 || opcode === 3) {
-        const minuendLocal = opcode === 3 ? L_B : L_A;
-        const subLocal = opcode === 3 ? L_A : L_B;
-        setC(cb, (b) => {
-          b.local_get(minuendLocal).local_get(subLocal).op(OP.i32_ge_u);
-        });
-        setV(cb, (b) => {
-          b.local_get(minuendLocal).local_get(subLocal).op(OP.i32_xor);
-          b.local_get(minuendLocal).local_get(L_RES).op(OP.i32_xor);
-          b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
-        });
-      } else if (isLogical(opcode)) {
-        return { status: "bail" };
-      }
-    }
-    return { status: "ok" };
   }
-  return { status: "bail" };
+  cb.local_set(L_B);
+  loadReg(cb, Rn, regShift ? pcRead : pcPlus8).local_set(L_A);
+  const a = () => cb.local_get(L_A);
+  const b_ = () => cb.local_get(L_B);
+  switch (opcode) {
+    case 0:
+    case 8:
+      a();
+      b_();
+      cb.op(OP.i32_and).local_set(L_RES);
+      break;
+    // AND / TST
+    case 1:
+    case 9:
+      a();
+      b_();
+      cb.op(OP.i32_xor).local_set(L_RES);
+      break;
+    // EOR / TEQ
+    case 12:
+      a();
+      b_();
+      cb.op(OP.i32_or).local_set(L_RES);
+      break;
+    // ORR
+    case 14:
+      a();
+      b_();
+      cb.i32_const(-1).op(OP.i32_xor);
+      cb.op(OP.i32_and).local_set(L_RES);
+      break;
+    // BIC
+    case 13:
+      b_();
+      cb.local_set(L_RES);
+      break;
+    // MOV
+    case 15:
+      b_();
+      cb.i32_const(-1).op(OP.i32_xor).local_set(L_RES);
+      break;
+    // MVN
+    case 4:
+    case 11:
+      a();
+      b_();
+      cb.op(OP.i32_add).local_set(L_RES);
+      break;
+    // ADD / CMN
+    case 2:
+    case 10:
+      a();
+      b_();
+      cb.op(OP.i32_sub).local_set(L_RES);
+      break;
+    // SUB / CMP
+    case 3:
+      b_();
+      a();
+      cb.op(OP.i32_sub).local_set(L_RES);
+      break;
+    // RSB
+    case 5:
+      a();
+      b_();
+      cb.op(OP.i32_add).local_set(L_T);
+      cb.local_get(L_T).i32_const(OFF_CF).i32_load(0).op(OP.i32_add).local_set(L_RES);
+      break;
+    case 6:
+      a();
+      b_();
+      cb.op(OP.i32_sub).i32_const(1).op(OP.i32_sub).i32_const(OFF_CF).i32_load(0).op(OP.i32_add).local_set(L_RES);
+      break;
+    case 7:
+      b_();
+      a();
+      cb.op(OP.i32_sub).i32_const(1).op(OP.i32_sub).i32_const(OFF_CF).i32_load(0).op(OP.i32_add).local_set(L_RES);
+      break;
+  }
+  if (!isTest(opcode)) {
+    cb.i32_const(regOff(Rd)).local_get(L_RES).i32_store(0);
+  }
+  if (S || isTest(opcode)) {
+    setFlagZNfromRes(cb);
+    if (opcode === 4 || opcode === 11) {
+      setFlag(cb, OFF_CF, (b) => b.local_get(L_RES).local_get(L_A).op(OP.i32_lt_u));
+      setFlag(cb, OFF_VF, (b) => {
+        b.local_get(L_A).local_get(L_B).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
+        b.local_get(L_A).local_get(L_RES).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+    } else if (opcode === 2 || opcode === 10 || opcode === 3) {
+      const minuend = opcode === 3 ? L_B : L_A;
+      const sub = opcode === 3 ? L_A : L_B;
+      setFlag(cb, OFF_CF, (b) => b.local_get(minuend).local_get(sub).op(OP.i32_ge_u));
+      setFlag(cb, OFF_VF, (b) => {
+        b.local_get(minuend).local_get(sub).op(OP.i32_xor);
+        b.local_get(minuend).local_get(L_RES).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+    } else if (opcode === 5) {
+      setFlag(cb, OFF_CF, (b) => {
+        b.local_get(L_T).local_get(L_A).op(OP.i32_lt_u);
+        b.local_get(L_RES).local_get(L_T).op(OP.i32_lt_u);
+        b.op(OP.i32_or);
+      });
+      setFlag(cb, OFF_VF, (b) => {
+        b.local_get(L_A).local_get(L_B).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
+        b.local_get(L_A).local_get(L_RES).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+    } else if (opcode === 6 || opcode === 7) {
+      const m = opcode === 6 ? L_A : L_B;
+      const s2 = opcode === 6 ? L_B : L_A;
+      setFlag(cb, OFF_CF, (b) => {
+        b.local_get(m).local_get(s2).op(OP.i32_gt_u);
+        b.local_get(m).local_get(s2).op(OP.i32_eq);
+        b.i32_const(OFF_CF).i32_load(0);
+        b.op(OP.i32_and);
+        b.op(OP.i32_or);
+      });
+      setFlag(cb, OFF_VF, (b) => {
+        b.local_get(m).local_get(s2).op(OP.i32_xor);
+        b.local_get(m).local_get(L_RES).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+    } else if (isLogical(opcode)) {
+      if (carryMode === 1) setFlag(cb, OFF_CF, (b) => b.i32_const(carryConst));
+      else if (carryMode === 2 && carryExpr) setFlag(cb, OFF_CF, carryExpr);
+    }
+  }
+  return { status: "ok" };
 }
-var RESERVED_LOCALS = [
-  { count: 3, type: I32 }
-  // L_A, L_B, L_RES
-];
+function emitShiftRegValue(cb, stype) {
+  cb.local_get(L_B).op(OP.i32_eqz);
+  cb.if_();
+  cb.else_();
+  if (stype === 0 || stype === 1) {
+    const shiftOp = stype === 0 ? OP.i32_shl : OP.i32_shr_u;
+    cb.local_get(L_B).i32_const(32).op(OP.i32_lt_u);
+    cb.if_();
+    cb.local_get(L_T).local_get(L_B).op(shiftOp).local_set(L_T);
+    cb.else_();
+    cb.i32_const(0).local_set(L_T);
+    cb.end();
+  } else if (stype === 2) {
+    cb.local_get(L_B).i32_const(32).op(OP.i32_lt_u);
+    cb.if_();
+    cb.local_get(L_T).local_get(L_B).op(OP.i32_shr_s).local_set(L_T);
+    cb.else_();
+    cb.local_get(L_T).i32_const(31).op(OP.i32_shr_s).local_set(L_T);
+    cb.end();
+  } else {
+    cb.local_get(L_B).i32_const(31).op(OP.i32_and).local_set(L_RES);
+    cb.local_get(L_RES).op(OP.i32_eqz);
+    cb.if_();
+    cb.else_();
+    cb.local_get(L_T).local_get(L_RES).op(OP.i32_rotr).local_set(L_T);
+    cb.end();
+  }
+  cb.end();
+}
+function liftSingleXfer(cb, instr, pc, pcPlus8, pcPlus12, ctx) {
+  const regOffsetForm = (instr & 33554432) !== 0;
+  const pre = (instr & 16777216) !== 0;
+  const up = (instr & 8388608) !== 0;
+  const byte = (instr & 4194304) !== 0;
+  const W = (instr & 2097152) !== 0;
+  const L = (instr & 1048576) !== 0;
+  const Rn = instr >>> 16 & 15;
+  const Rd = instr >>> 12 & 15;
+  if (Rn === 15 && (W || !pre)) return { status: "bail", reason: "ldr-pc-wb" };
+  if (L && Rn === 15 && pre && !W && !regOffsetForm && ctx?.romRead32) {
+    const off = instr & 4095;
+    const addr = (up ? pcPlus8 + off : pcPlus8 - off) >>> 0;
+    const w = ctx.romRead32(addr & ~3);
+    if (w !== null && w !== void 0) {
+      let val;
+      if (byte) val = w >>> (addr & 3) * 8 & 255;
+      else {
+        const rot = (addr & 3) * 8;
+        val = rot === 0 ? w >>> 0 : (w >>> rot | w << 32 - rot) >>> 0;
+      }
+      if (Rd === 15) {
+        cb.i32_const(regOff(15)).i32_const(val & ~3 | 0).i32_store(0);
+        return { status: "endsBlock" };
+      }
+      cb.i32_const(regOff(Rd)).i32_const(val | 0).i32_store(0);
+      return { status: "ok" };
+    }
+  }
+  if (!regOffsetForm) {
+    cb.i32_const(instr & 4095).local_set(L_B);
+  } else {
+    const rm = instr & 15;
+    if (rm === 15) return { status: "bail", reason: "ldr-rm15" };
+    const stype = instr >>> 5 & 3;
+    const amount = instr >>> 7 & 31;
+    loadReg(cb, rm, pcPlus8);
+    if (stype === 0) {
+      if (amount !== 0) cb.i32_const(amount).op(OP.i32_shl);
+    } else if (stype === 1) {
+      cb.drop();
+      cb.i32_const(0);
+      if (amount !== 0) {
+        cb.drop();
+        loadReg(cb, rm, pcPlus8).i32_const(amount).op(OP.i32_shr_u);
+      }
+    } else if (stype === 2) {
+      cb.i32_const(amount === 0 ? 31 : amount).op(OP.i32_shr_s);
+    } else {
+      if (amount === 0) {
+        cb.i32_const(1).op(OP.i32_shr_u);
+        cb.i32_const(OFF_CF).i32_load(0).i32_const(31).op(OP.i32_shl);
+        cb.op(OP.i32_or);
+      } else cb.i32_const(amount).op(OP.i32_rotr);
+    }
+    cb.local_set(L_B);
+  }
+  loadReg(cb, Rn, pcPlus8).local_set(L_A);
+  if (pre) {
+    cb.local_get(L_A).local_get(L_B).op(up ? OP.i32_add : OP.i32_sub).local_set(L_T);
+  } else {
+    cb.local_get(L_A).local_set(L_T);
+  }
+  const emitWbAddr = (b) => {
+    if (pre) b.local_get(L_T);
+    else b.local_get(L_A).local_get(L_B).op(up ? OP.i32_add : OP.i32_sub);
+  };
+  if (L) {
+    if (byte) cb.local_get(L_T).call(HOST.read8).local_set(L_RES);
+    else {
+      emitLdrWord(cb, L_T);
+      cb.local_set(L_RES);
+    }
+    if ((W || !pre) && Rn !== Rd && Rn !== 15) {
+      cb.i32_const(regOff(Rn));
+      emitWbAddr(cb);
+      cb.i32_store(0);
+    }
+    if (Rd === 15) {
+      cb.i32_const(regOff(15)).local_get(L_RES).i32_const(-4).op(OP.i32_and).i32_store(0);
+      return { status: "endsBlock", mayLoad: true };
+    }
+    cb.i32_const(regOff(Rd)).local_get(L_RES).i32_store(0);
+    return { status: "ok", mayLoad: true };
+  }
+  if (byte) {
+    cb.local_get(L_T);
+    loadReg(cb, Rd, pcPlus12);
+    cb.call(HOST.write8);
+  } else {
+    cb.local_get(L_T).i32_const(-4).op(OP.i32_and);
+    loadReg(cb, Rd, pcPlus12);
+    cb.call(HOST.write32);
+  }
+  if ((W || !pre) && Rn !== 15) {
+    cb.i32_const(regOff(Rn));
+    emitWbAddr(cb);
+    cb.i32_store(0);
+  }
+  return { status: "ok", mayStore: true };
+}
+function liftHalfXfer(cb, instr, pcPlus8) {
+  const pre = (instr & 16777216) !== 0;
+  const up = (instr & 8388608) !== 0;
+  const immForm = (instr & 4194304) !== 0;
+  const W = (instr & 2097152) !== 0;
+  const L = (instr & 1048576) !== 0;
+  const Rn = instr >>> 16 & 15;
+  const Rd = instr >>> 12 & 15;
+  const sh = instr >>> 5 & 3;
+  if (Rn === 15 || Rd === 15) return { status: "bail", reason: "half-pc" };
+  if (immForm) cb.i32_const(instr >>> 4 & 240 | instr & 15).local_set(L_B);
+  else {
+    const ro = instr & 15;
+    if (ro === 15) return { status: "bail", reason: "half-ro15" };
+    loadReg(cb, ro, pcPlus8).local_set(L_B);
+  }
+  loadReg(cb, Rn, pcPlus8).local_set(L_A);
+  if (pre) cb.local_get(L_A).local_get(L_B).op(up ? OP.i32_add : OP.i32_sub).local_set(L_T);
+  else cb.local_get(L_A).local_set(L_T);
+  const emitWbAddr = (b) => {
+    if (pre) b.local_get(L_T);
+    else b.local_get(L_A).local_get(L_B).op(up ? OP.i32_add : OP.i32_sub);
+  };
+  if (L) {
+    if (sh === 1) {
+      cb.local_get(L_T).i32_const(-2).op(OP.i32_and).call(HOST.read16);
+      cb.local_get(L_T).i32_const(1).op(OP.i32_and).i32_const(3).op(OP.i32_shl);
+      cb.op(OP.i32_rotr);
+      cb.local_set(L_RES);
+    } else if (sh === 2) {
+      cb.local_get(L_T).call(HOST.read8);
+      emitSignExt(cb, 8);
+      cb.local_set(L_RES);
+    } else {
+      cb.local_get(L_T).i32_const(1).op(OP.i32_and);
+      cb.if_(I32);
+      cb.local_get(L_T).call(HOST.read8);
+      emitSignExt(cb, 8);
+      cb.else_();
+      cb.local_get(L_T).call(HOST.read16);
+      emitSignExt(cb, 16);
+      cb.end();
+      cb.local_set(L_RES);
+    }
+    if ((W || !pre) && Rn !== Rd) {
+      cb.i32_const(regOff(Rn));
+      emitWbAddr(cb);
+      cb.i32_store(0);
+    }
+    cb.i32_const(regOff(Rd)).local_get(L_RES).i32_store(0);
+    return { status: "ok", mayLoad: true };
+  }
+  cb.local_get(L_T).i32_const(-2).op(OP.i32_and);
+  loadReg(cb, Rd, pcPlus8);
+  cb.call(HOST.write16);
+  if (W || !pre) {
+    cb.i32_const(regOff(Rn));
+    emitWbAddr(cb);
+    cb.i32_store(0);
+  }
+  return { status: "ok", mayStore: true };
+}
+function liftBlockXfer(cb, instr, pcPlus12) {
+  const pre = (instr & 16777216) !== 0;
+  const up = (instr & 8388608) !== 0;
+  const psrForce = (instr & 4194304) !== 0;
+  const W = (instr & 2097152) !== 0;
+  const L = (instr & 1048576) !== 0;
+  const Rn = instr >>> 16 & 15;
+  const list = instr & 65535;
+  if (psrForce) return { status: "bail", reason: "ldm-sbit" };
+  if (Rn === 15) return { status: "bail", reason: "ldm-rn15" };
+  cb.i32_const(regOff(Rn)).i32_load(0).local_set(L_A);
+  if (list === 0) {
+    const delta = 64;
+    const eaOff = up ? 0 : -delta;
+    const wbOff = up ? delta : -delta;
+    const accOff = eaOff + ((up ? pre : !pre) ? 4 : 0);
+    if (L) {
+      cb.i32_const(regOff(15));
+      cb.local_get(L_A).i32_const(accOff).op(OP.i32_add).i32_const(-4).op(OP.i32_and).call(HOST.read32);
+      cb.i32_const(-4).op(OP.i32_and);
+      cb.i32_store(0);
+      if (W) {
+        cb.i32_const(regOff(Rn));
+        cb.local_get(L_A).i32_const(wbOff).op(OP.i32_add);
+        cb.i32_store(0);
+      }
+      return { status: "endsBlock", mayLoad: true };
+    }
+    cb.local_get(L_A).i32_const(accOff).op(OP.i32_add).i32_const(-4).op(OP.i32_and);
+    cb.i32_const(pcPlus12 | 0);
+    cb.call(HOST.write32);
+    if (W) {
+      cb.i32_const(regOff(Rn));
+      cb.local_get(L_A).i32_const(wbOff).op(OP.i32_add);
+      cb.i32_store(0);
+    }
+    return { status: "ok", mayStore: true };
+  }
+  let count = 0;
+  for (let i = 0; i < 16; i++) if (list & 1 << i) count++;
+  const startOff = up ? 0 : -(count * 4);
+  const finalOff = up ? count * 4 : -(count * 4);
+  const preInc = up ? pre : !pre;
+  const baseInList = (list & 1 << Rn) !== 0;
+  let lowest = -1;
+  for (let i = 0; i < 16; i++) if (list & 1 << i) {
+    lowest = i;
+    break;
+  }
+  const storeFinalForBase = !L && baseInList && W && Rn !== lowest;
+  const loadsPc = L && (list & 32768) !== 0;
+  let k = 0;
+  for (let i = 0; i < 16; i++) {
+    if (!(list & 1 << i)) continue;
+    const slotOff = startOff + k * 4 + (preInc ? 4 : 0);
+    if (L) {
+      if (i === 15) {
+        cb.i32_const(regOff(15));
+        cb.local_get(L_A).i32_const(slotOff).op(OP.i32_add).i32_const(-4).op(OP.i32_and).call(HOST.read32);
+        cb.i32_const(-4).op(OP.i32_and);
+        cb.i32_store(0);
+      } else {
+        cb.i32_const(regOff(i));
+        cb.local_get(L_A).i32_const(slotOff).op(OP.i32_add).i32_const(-4).op(OP.i32_and).call(HOST.read32);
+        cb.i32_store(0);
+      }
+    } else {
+      cb.local_get(L_A).i32_const(slotOff).op(OP.i32_add).i32_const(-4).op(OP.i32_and);
+      if (i === 15) cb.i32_const(pcPlus12 | 0);
+      else if (i === Rn && storeFinalForBase) cb.local_get(L_A).i32_const(finalOff).op(OP.i32_add);
+      else cb.i32_const(regOff(i)).i32_load(0);
+      cb.call(HOST.write32);
+    }
+    k++;
+  }
+  if (W && !(L && baseInList)) {
+    cb.i32_const(regOff(Rn));
+    cb.local_get(L_A).i32_const(finalOff).op(OP.i32_add);
+    cb.i32_store(0);
+  }
+  if (loadsPc) return { status: "endsBlock", mayLoad: true };
+  return L ? { status: "ok", mayLoad: true } : { status: "ok", mayStore: true };
+}
 
 // src/recompiler/thumb_lifter.ts
 var L_A2 = 0;
 var L_B2 = 1;
 var L_RES2 = 2;
+var L_T2 = 3;
+var FLAG_T_BIT2 = 32;
 function loadReg2(cb, n) {
   cb.i32_const(regOff(n)).i32_load(0);
   return cb;
@@ -2026,9 +2549,29 @@ function setFlagWord(cb, off, push) {
   push(cb);
   cb.i32_store(0);
 }
-function liftThumb(cb, instr, pc) {
+function emitLdrWord2(cb, addrLocal) {
+  cb.local_get(addrLocal).i32_const(-4).op(OP.i32_and).call(HOST.read32);
+  cb.local_get(addrLocal).i32_const(3).op(OP.i32_and).i32_const(3).op(OP.i32_shl);
+  cb.op(OP.i32_rotr);
+}
+function emitSetThumbBitFromLocal2(cb, local) {
+  cb.i32_const(OFF_CPSR);
+  cb.i32_const(OFF_CPSR).i32_load(0).i32_const(~FLAG_T_BIT2).op(OP.i32_and);
+  cb.local_get(local).i32_const(1).op(OP.i32_and).i32_const(5).op(OP.i32_shl);
+  cb.op(OP.i32_or);
+  cb.i32_store(0);
+}
+function emitSignExt2(cb, bits) {
+  cb.i32_const(32 - bits).op(OP.i32_shl).i32_const(32 - bits).op(OP.i32_shr_s);
+}
+function disabled(top) {
+  const d = globalThis.__THUMB_DISABLE;
+  return d && d.has(top);
+}
+function liftThumb(cb, instr, pc, ctx) {
   const pcPlus4 = pc + 4 >>> 0;
   const top = instr >>> 13;
+  if (disabled(top)) return { status: "bail", reason: "disabled" };
   if (top === 0) {
     const op = instr >>> 11 & 3;
     if (op === 3) {
@@ -2149,9 +2692,82 @@ function liftThumb(cb, instr, pc) {
       return liftAluReg(cb, instr);
     }
     if ((instr & 64512) === 17408) {
-      return liftHiReg(cb, instr, pcPlus4);
+      return liftHiReg(cb, instr, pc, pcPlus4);
     }
-    return { status: "bail" };
+    if ((instr & 63488) === 18432) {
+      const rd = instr >>> 8 & 7;
+      const off = (instr & 255) << 2;
+      const addr = (pcPlus4 & ~3) + off >>> 0;
+      const folded = ctx?.romRead32 ? ctx.romRead32(addr & ~3) : null;
+      if (folded !== null && folded !== void 0) {
+        cb.i32_const(folded | 0);
+        storeRegFromStack(cb, rd);
+        return { status: "ok" };
+      }
+      cb.i32_const(addr & ~3 | 0).call(HOST.read32);
+      storeRegFromStack(cb, rd);
+      return { status: "ok", mayLoad: true };
+    }
+    if ((instr & 512) === 0) {
+      const load = (instr & 2048) !== 0;
+      const byte = (instr & 1024) !== 0;
+      const ro = instr >>> 6 & 7;
+      const rb = instr >>> 3 & 7;
+      const rd = instr & 7;
+      loadReg2(cb, rb);
+      loadReg2(cb, ro);
+      cb.op(OP.i32_add).local_set(L_A2);
+      if (load) {
+        if (byte) {
+          cb.local_get(L_A2).call(HOST.read8);
+        } else {
+          emitLdrWord2(cb, L_A2);
+        }
+        storeRegFromStack(cb, rd);
+        return { status: "ok", mayLoad: true };
+      }
+      if (byte) {
+        cb.local_get(L_A2);
+        loadReg2(cb, rd);
+        cb.call(HOST.write8);
+      } else {
+        cb.local_get(L_A2).i32_const(-4).op(OP.i32_and);
+        loadReg2(cb, rd);
+        cb.call(HOST.write32);
+      }
+      return { status: "ok", mayStore: true };
+    }
+    {
+      const h = (instr & 2048) !== 0;
+      const s = (instr & 1024) !== 0;
+      const ro = instr >>> 6 & 7;
+      const rb = instr >>> 3 & 7;
+      const rd = instr & 7;
+      loadReg2(cb, rb);
+      loadReg2(cb, ro);
+      cb.op(OP.i32_add).local_set(L_A2);
+      if (!s && !h) {
+        cb.local_get(L_A2).i32_const(-2).op(OP.i32_and);
+        loadReg2(cb, rd);
+        cb.call(HOST.write16);
+        return { status: "ok", mayStore: true };
+      }
+      if (!s && h) {
+        cb.local_get(L_A2).i32_const(-2).op(OP.i32_and).call(HOST.read16);
+        storeRegFromStack(cb, rd);
+        return { status: "ok", mayLoad: true };
+      }
+      if (s && !h) {
+        cb.local_get(L_A2).call(HOST.read8);
+        emitSignExt2(cb, 8);
+        storeRegFromStack(cb, rd);
+        return { status: "ok", mayLoad: true };
+      }
+      cb.local_get(L_A2).i32_const(-2).op(OP.i32_and).call(HOST.read16);
+      emitSignExt2(cb, 16);
+      storeRegFromStack(cb, rd);
+      return { status: "ok", mayLoad: true };
+    }
   }
   if (top === 3) {
     const byte = (instr & 4096) !== 0;
@@ -2163,21 +2779,24 @@ function liftThumb(cb, instr, pc) {
     cb.i32_const(byte ? off : off << 2);
     cb.op(OP.i32_add).local_set(L_A2);
     if (load) {
-      if (!byte) return { status: "bail" };
-      cb.local_get(L_A2).call(HOST.read8);
-      storeRegFromStack(cb, rd);
-    } else {
       if (byte) {
-        cb.local_get(L_A2);
-        loadReg2(cb, rd);
-        cb.call(HOST.write8);
+        cb.local_get(L_A2).call(HOST.read8);
       } else {
-        cb.local_get(L_A2).i32_const(~3).op(OP.i32_and);
-        loadReg2(cb, rd);
-        cb.call(HOST.write32);
+        emitLdrWord2(cb, L_A2);
       }
+      storeRegFromStack(cb, rd);
+      return { status: "ok", mayLoad: true };
     }
-    return { status: "ok" };
+    if (byte) {
+      cb.local_get(L_A2);
+      loadReg2(cb, rd);
+      cb.call(HOST.write8);
+    } else {
+      cb.local_get(L_A2).i32_const(-4).op(OP.i32_and);
+      loadReg2(cb, rd);
+      cb.call(HOST.write32);
+    }
+    return { status: "ok", mayStore: true };
   }
   if (top === 4) {
     if ((instr & 61440) === 32768) {
@@ -2189,22 +2808,26 @@ function liftThumb(cb, instr, pc) {
       if (load2) {
         cb.local_get(L_A2).call(HOST.read16);
         storeRegFromStack(cb, rd2);
-      } else {
-        cb.local_get(L_A2);
-        loadReg2(cb, rd2);
-        cb.call(HOST.write16);
+        return { status: "ok", mayLoad: true };
       }
-      return { status: "ok" };
+      cb.local_get(L_A2);
+      loadReg2(cb, rd2);
+      cb.call(HOST.write16);
+      return { status: "ok", mayStore: true };
     }
     const load = (instr & 2048) !== 0;
     const rd = instr >>> 8 & 7;
     const off = (instr & 255) << 2;
     loadReg2(cb, 13).i32_const(off).op(OP.i32_add).local_set(L_A2);
-    if (load) return { status: "bail" };
-    cb.local_get(L_A2).i32_const(~3).op(OP.i32_and);
+    if (load) {
+      emitLdrWord2(cb, L_A2);
+      storeRegFromStack(cb, rd);
+      return { status: "ok", mayLoad: true };
+    }
+    cb.local_get(L_A2).i32_const(-4).op(OP.i32_and);
     loadReg2(cb, rd);
     cb.call(HOST.write32);
-    return { status: "ok" };
+    return { status: "ok", mayStore: true };
   }
   if (top === 5) {
     if ((instr & 61440) === 40960) {
@@ -2226,24 +2849,114 @@ function liftThumb(cb, instr, pc) {
       storeRegFromLocal(cb, 13, L_RES2);
       return { status: "ok" };
     }
-    return { status: "bail" };
+    if ((instr & 62976) === 46080) {
+      const load = (instr & 2048) !== 0;
+      const pcLr = (instr & 256) !== 0;
+      const list = instr & 255;
+      if (load) {
+        loadReg2(cb, 13).local_set(L_A2);
+        let k2 = 0;
+        for (let i = 0; i < 8; i++) {
+          if (!(list & 1 << i)) continue;
+          cb.i32_const(regOff(i));
+          cb.local_get(L_A2).i32_const(k2 * 4).op(OP.i32_add).i32_const(-4).op(OP.i32_and).call(HOST.read32);
+          cb.i32_store(0);
+          k2++;
+        }
+        if (pcLr) {
+          cb.local_get(L_A2).i32_const(k2 * 4).op(OP.i32_add).i32_const(-4).op(OP.i32_and).call(HOST.read32).local_set(L_B2);
+          k2++;
+          emitSetThumbBitFromLocal2(cb, L_B2);
+          cb.i32_const(regOff(15));
+          cb.local_get(L_B2).i32_const(-2).op(OP.i32_and);
+          cb.i32_store(0);
+        }
+        cb.i32_const(regOff(13));
+        cb.local_get(L_A2).i32_const(k2 * 4).op(OP.i32_add);
+        cb.i32_store(0);
+        if (pcLr) return { status: "endsBlock", mayLoad: true };
+        return { status: "ok", mayLoad: true };
+      }
+      let count = 0;
+      for (let i = 0; i < 8; i++) if (list & 1 << i) count++;
+      if (pcLr) count++;
+      if (count === 0) return { status: "bail", reason: "push-empty" };
+      loadReg2(cb, 13).i32_const(count * 4).op(OP.i32_sub).local_set(L_A2);
+      let k = 0;
+      for (let i = 0; i < 8; i++) {
+        if (!(list & 1 << i)) continue;
+        cb.local_get(L_A2).i32_const(k * 4).op(OP.i32_add).i32_const(-4).op(OP.i32_and);
+        loadReg2(cb, i);
+        cb.call(HOST.write32);
+        k++;
+      }
+      if (pcLr) {
+        cb.local_get(L_A2).i32_const(k * 4).op(OP.i32_add).i32_const(-4).op(OP.i32_and);
+        loadReg2(cb, 14);
+        cb.call(HOST.write32);
+      }
+      storeRegFromLocal(cb, 13, L_A2);
+      return { status: "ok", mayStore: true };
+    }
+    return { status: "bail", reason: "misc-b" };
   }
   if (top === 6) {
     if ((instr & 61440) === 49152) {
-      return { status: "bail" };
+      const load = (instr & 2048) !== 0;
+      const rb = instr >>> 8 & 7;
+      const list = instr & 255;
+      loadReg2(cb, rb).local_set(L_A2);
+      if (list === 0) {
+        if (load) {
+          cb.i32_const(regOff(15));
+          cb.local_get(L_A2).i32_const(-4).op(OP.i32_and).call(HOST.read32).i32_const(-2).op(OP.i32_and);
+          cb.i32_store(0);
+          cb.i32_const(regOff(rb));
+          cb.local_get(L_A2).i32_const(64).op(OP.i32_add);
+          cb.i32_store(0);
+          return { status: "endsBlock", mayLoad: true };
+        }
+        cb.local_get(L_A2).i32_const(-4).op(OP.i32_and);
+        cb.i32_const(pcPlus4 | 0);
+        cb.call(HOST.write32);
+        cb.i32_const(regOff(rb));
+        cb.local_get(L_A2).i32_const(64).op(OP.i32_add);
+        cb.i32_store(0);
+        return { status: "ok", mayStore: true };
+      }
+      let k = 0;
+      for (let i = 0; i < 8; i++) {
+        if (!(list & 1 << i)) continue;
+        if (load) {
+          cb.i32_const(regOff(i));
+          cb.local_get(L_A2).i32_const(k * 4).op(OP.i32_add).i32_const(-4).op(OP.i32_and).call(HOST.read32);
+          cb.i32_store(0);
+        } else {
+          cb.local_get(L_A2).i32_const(k * 4).op(OP.i32_add).i32_const(-4).op(OP.i32_and);
+          loadReg2(cb, i);
+          cb.call(HOST.write32);
+        }
+        k++;
+      }
+      if (!(load && list & 1 << rb)) {
+        cb.i32_const(regOff(rb));
+        cb.local_get(L_A2).i32_const(k * 4).op(OP.i32_add);
+        cb.i32_store(0);
+      }
+      return load ? { status: "ok", mayLoad: true } : { status: "ok", mayStore: true };
     }
     const cond = instr >>> 8 & 15;
-    if (cond === 15) return { status: "bail" };
-    if (cond === 14) return { status: "bail" };
+    if (cond === 15) return { status: "bail", reason: "swi" };
+    if (cond === 14) return { status: "bail", reason: "undef" };
     let off = instr & 255;
     if (off & 128) off |= 4294967040;
     const taken = pcPlus4 + (off << 1) >>> 0;
     const notTaken = pc + 2 >>> 0;
     emitCond(cb, cond);
     cb.if_();
-    cb.i32_const(regOff(15)).i32_const(taken).i32_store(0);
+    cb.i32_const(regOff(15)).i32_const(taken | 0).i32_store(0);
     cb.else_();
-    cb.i32_const(regOff(15)).i32_const(notTaken).i32_store(0);
+    cb.i32_const(regOff(15)).i32_const(notTaken | 0).i32_store(0);
     cb.end();
     return { status: "endsBlock" };
   }
@@ -2253,14 +2966,14 @@ function liftThumb(cb, instr, pc) {
       let off = instr & 2047;
       if (off & 1024) off |= 4294965248;
       const target = pcPlus4 + (off << 1) >>> 0;
-      cb.i32_const(regOff(15)).i32_const(target).i32_store(0);
+      cb.i32_const(regOff(15)).i32_const(target | 0).i32_store(0);
       return { status: "endsBlock", staticTarget: target };
     }
     if (sub === 30) {
       let hi = (instr & 2047) << 12;
       if (hi & 4194304) hi |= 4286578688;
       const lr = pcPlus4 + hi >>> 0;
-      cb.i32_const(regOff(14)).i32_const(lr).i32_store(0);
+      cb.i32_const(regOff(14)).i32_const(lr | 0).i32_store(0);
       return { status: "ok" };
     }
     if (sub === 31) {
@@ -2269,12 +2982,12 @@ function liftThumb(cb, instr, pc) {
       cb.i32_const(regOff(15));
       loadReg2(cb, 14).i32_const(off).op(OP.i32_add);
       cb.i32_store(0);
-      cb.i32_const(regOff(14)).i32_const(next).i32_store(0);
+      cb.i32_const(regOff(14)).i32_const(next | 0).i32_store(0);
       return { status: "endsBlock", isCall: true };
     }
-    return { status: "bail" };
+    return { status: "bail", reason: "fmt19-blx" };
   }
-  return { status: "bail" };
+  return { status: "bail", reason: "undecoded" };
 }
 function liftAluReg(cb, instr) {
   const op = instr >>> 6 & 15;
@@ -2357,13 +3070,112 @@ function liftAluReg(cb, instr) {
         b.local_get(L_B2).local_get(L_RES2).op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
       });
       return { status: "ok" };
-    // 0x2 LSL, 0x3 LSR, 0x4 ASR, 0x7 ROR (register-amount shifts), 0x5 ADC, 0x6 SBC:
-    // these need full register-amount shifter-carry / carry-in modeling. Bail to interpreter.
+    case 5: {
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_add).local_set(L_T2);
+      cb.local_get(L_T2).i32_const(OFF_CF).i32_load(0).op(OP.i32_add).local_set(L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => {
+        b.local_get(L_T2).local_get(L_A2).op(OP.i32_lt_u);
+        b.local_get(L_RES2).local_get(L_T2).op(OP.i32_lt_u);
+        b.op(OP.i32_or);
+      });
+      setFlagWord(cb, OFF_VF, (b) => {
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor).i32_const(-1).op(OP.i32_xor);
+        b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    }
+    case 6: {
+      loadAB();
+      cb.local_get(L_A2).local_get(L_B2).op(OP.i32_sub).i32_const(1).op(OP.i32_sub).i32_const(OFF_CF).i32_load(0).op(OP.i32_add).local_set(L_RES2);
+      setFlagWord(cb, OFF_CF, (b) => {
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_gt_u);
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_eq);
+        b.i32_const(OFF_CF).i32_load(0);
+        b.op(OP.i32_and);
+        b.op(OP.i32_or);
+      });
+      setFlagWord(cb, OFF_VF, (b) => {
+        b.local_get(L_A2).local_get(L_B2).op(OP.i32_xor);
+        b.local_get(L_A2).local_get(L_RES2).op(OP.i32_xor);
+        b.op(OP.i32_and).i32_const(31).op(OP.i32_shr_u);
+      });
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    }
+    case 2:
+    // LSL by register
+    case 3:
+    // LSR by register
+    case 4:
+    // ASR by register
+    case 7: {
+      const kind = op === 2 ? 0 : op === 3 ? 1 : op === 4 ? 2 : 3;
+      loadReg2(cb, rd).local_set(L_A2);
+      loadReg2(cb, rs).i32_const(255).op(OP.i32_and).local_set(L_B2);
+      emitShiftByReg(cb, kind);
+      storeRegFromLocal(cb, rd, L_RES2);
+      setNZfromLocal(cb, L_RES2);
+      return { status: "ok" };
+    }
     default:
-      return { status: "bail" };
+      return { status: "bail", reason: "alu-unknown" };
   }
 }
-function liftHiReg(cb, instr, pcPlus4) {
+function emitShiftByReg(cb, kind) {
+  cb.local_get(L_B2).op(OP.i32_eqz);
+  cb.if_();
+  cb.local_get(L_A2).local_set(L_RES2);
+  cb.else_();
+  if (kind === 0 || kind === 1) {
+    const shiftOp = kind === 0 ? OP.i32_shl : OP.i32_shr_u;
+    cb.local_get(L_B2).i32_const(32).op(OP.i32_lt_u);
+    cb.if_();
+    cb.local_get(L_A2).local_get(L_B2).op(shiftOp).local_set(L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => {
+      if (kind === 0) b.local_get(L_A2).i32_const(32).local_get(L_B2).op(OP.i32_sub).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
+      else b.local_get(L_A2).local_get(L_B2).i32_const(1).op(OP.i32_sub).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
+    });
+    cb.else_();
+    cb.local_get(L_B2).i32_const(32).op(OP.i32_eq);
+    cb.if_();
+    cb.i32_const(0).local_set(L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => {
+      if (kind === 0) b.local_get(L_A2).i32_const(1).op(OP.i32_and);
+      else b.local_get(L_A2).i32_const(31).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and);
+    });
+    cb.else_();
+    cb.i32_const(0).local_set(L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => b.i32_const(0));
+    cb.end();
+    cb.end();
+  } else if (kind === 2) {
+    cb.local_get(L_B2).i32_const(32).op(OP.i32_lt_u);
+    cb.if_();
+    cb.local_get(L_A2).local_get(L_B2).op(OP.i32_shr_s).local_set(L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).local_get(L_B2).i32_const(1).op(OP.i32_sub).op(OP.i32_shr_s).i32_const(1).op(OP.i32_and));
+    cb.else_();
+    cb.local_get(L_A2).i32_const(31).op(OP.i32_shr_s).local_set(L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).i32_const(31).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and));
+    cb.end();
+  } else {
+    cb.local_get(L_B2).i32_const(31).op(OP.i32_and).local_set(L_T2);
+    cb.local_get(L_T2).op(OP.i32_eqz);
+    cb.if_();
+    cb.local_get(L_A2).local_set(L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).i32_const(31).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and));
+    cb.else_();
+    cb.local_get(L_A2).local_get(L_T2).op(OP.i32_rotr).local_set(L_RES2);
+    setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).local_get(L_T2).i32_const(1).op(OP.i32_sub).op(OP.i32_shr_u).i32_const(1).op(OP.i32_and));
+    cb.end();
+  }
+  cb.end();
+}
+function liftHiReg(cb, instr, pc, pcPlus4) {
   const op = instr >>> 8 & 3;
   const h1 = (instr & 128) !== 0;
   const h2 = (instr & 64) !== 0;
@@ -2371,18 +3183,48 @@ function liftHiReg(cb, instr, pcPlus4) {
   let rd = instr & 7;
   if (h1) rd += 8;
   if (h2) rs += 8;
-  if (op === 3) return { status: "bail" };
-  if (rd === 15 || rs === 15) return { status: "bail" };
+  const pushSrc = (b, i) => {
+    if (i === 15) b.i32_const(pcPlus4 | 0);
+    else loadReg2(b, i);
+  };
+  if (op === 3) {
+    pushSrc(cb, rs);
+    cb.local_set(L_A2);
+    emitSetThumbBitFromLocal2(cb, L_A2);
+    cb.local_get(L_A2).i32_const(1).op(OP.i32_and);
+    cb.if_();
+    cb.i32_const(regOff(15));
+    cb.local_get(L_A2).i32_const(-2).op(OP.i32_and);
+    cb.i32_store(0);
+    cb.else_();
+    cb.i32_const(regOff(15));
+    cb.local_get(L_A2).i32_const(-4).op(OP.i32_and);
+    cb.i32_store(0);
+    cb.end();
+    return { status: "endsBlock" };
+  }
   switch (op) {
-    case 0:
+    case 0: {
+      if (rd === 15) {
+        cb.i32_const(regOff(15));
+        cb.i32_const(pc + 2 | 0);
+        pushSrc(cb, rs);
+        cb.op(OP.i32_add).i32_const(-2).op(OP.i32_and);
+        cb.i32_store(0);
+        return { status: "endsBlock" };
+      }
       loadReg2(cb, rd).local_set(L_A2);
-      loadReg2(cb, rs).local_set(L_B2);
+      pushSrc(cb, rs);
+      cb.local_set(L_B2);
       cb.local_get(L_A2).local_get(L_B2).op(OP.i32_add).local_set(L_RES2);
       storeRegFromLocal(cb, rd, L_RES2);
       return { status: "ok" };
+    }
     case 1: {
-      loadReg2(cb, rd).local_set(L_A2);
-      loadReg2(cb, rs).local_set(L_B2);
+      if (rd === 15) cb.i32_const(pcPlus4 | 0).local_set(L_A2);
+      else loadReg2(cb, rd).local_set(L_A2);
+      pushSrc(cb, rs);
+      cb.local_set(L_B2);
       cb.local_get(L_A2).local_get(L_B2).op(OP.i32_sub).local_set(L_RES2);
       setNZfromLocal(cb, L_RES2);
       setFlagWord(cb, OFF_CF, (b) => b.local_get(L_A2).local_get(L_B2).op(OP.i32_ge_u));
@@ -2393,12 +3235,21 @@ function liftHiReg(cb, instr, pcPlus4) {
       });
       return { status: "ok" };
     }
-    case 2:
-      loadReg2(cb, rs).local_set(L_RES2);
+    case 2: {
+      if (rd === 15) {
+        cb.i32_const(regOff(15));
+        pushSrc(cb, rs);
+        cb.i32_const(-2).op(OP.i32_and);
+        cb.i32_store(0);
+        return { status: "endsBlock" };
+      }
+      pushSrc(cb, rs);
+      cb.local_set(L_RES2);
       storeRegFromLocal(cb, rd, L_RES2);
       return { status: "ok" };
+    }
   }
-  return { status: "bail" };
+  return { status: "bail", reason: "hireg-unknown" };
 }
 function emitCond(cb, cond) {
   const N = () => cb.i32_const(OFF_NF).i32_load(0);
@@ -2513,7 +3364,6 @@ var Recompiler = class {
    * it can only be a correct speedup or a safe fallback, never a correctness regression.
    */
   verifyFirstRun = true;
-  verified = /* @__PURE__ */ new Set();
   MAX_CACHE = 8192;
   constructor(bus) {
     this.bus = bus;
@@ -2533,7 +3383,164 @@ var Recompiler = class {
     };
   }
   /** Copy interpreter ArmState (current bank) into shared WASM memory + explode flags. */
+  /** Intra-block cycles executed so far by the currently-running native block (for lazy IO reads). */
+  pendingCycles() {
+    return this.i32[OFF_CYCLES >> 2] | 0;
+  }
+  /** Count of stale RAM-code blocks invalidated by the self-modifying-code guard. */
+  smcInvalidations = 0;
+  /** PCs where the machine must regain control (HLE entry points, quirk fixes, IRQ-return
+   *  sentinels). Block chaining stops when the next PC is one of these so machine.step() can
+   *  intercept exactly as it does on the single-step path. Populated by the machine. */
+  chainStops = /* @__PURE__ */ new Set();
+  /** Telemetry: histogram of bail reasons hit during block discovery, keyed "mode:reason". */
+  bailReasons = /* @__PURE__ */ new Map();
+  recordBail(mode, reason) {
+    const k = mode + ":" + (reason || "unknown");
+    this.bailReasons.set(k, (this.bailReasons.get(k) || 0) + 1);
+  }
+  /** Compile-time lift context: lets lifters constant-fold literal-pool loads from immutable ROM. */
+  liftCtx = {
+    romRead32: (addr) => {
+      const region = addr >>> 24 & 255;
+      if (region >= 8 && region <= 13) return this.bus.read32(addr >>> 0) >>> 0;
+      return null;
+    }
+  };
+  /** True if `pc` lies in a writable RAM region whose bytes can change under us (IWRAM 0x03, EWRAM
+   *  0x02). ROM (0x08+) and BIOS (0x00) are immutable, so blocks there never need a guard. */
+  isRamCode(pc) {
+    const region = pc >>> 24 & 255;
+    return region === 2 || region === 3;
+  }
+  /** FNV-1a checksum of `len` bytes of guest code starting at `pc`. Used as the self-modifying-code
+   *  guard for RAM blocks. `thumb` only affects nothing here (we read raw bytes), kept for clarity. */
+  checksumBytes(pc, len, _thumb) {
+    let h = 2166136261 | 0;
+    for (let i = 0; i < len; i++) {
+      h ^= this.bus.read8(pc + i >>> 0) & 255;
+      h = Math.imul(h, 16777619);
+    }
+    return h | 0;
+  }
+  /** Build the page-generation guard for a RAM block, or null if the bus has no page gens. */
+  buildPageGuard(pc, len) {
+    const m = this.bus;
+    const region = pc >>> 24 & 255;
+    let gens = null;
+    let mask = 0;
+    if (region === 3 && m.iwramGen) {
+      gens = m.iwramGen;
+      mask = 32767;
+    } else if (region === 2 && m.ewramGen) {
+      gens = m.ewramGen;
+      mask = 262143;
+    }
+    if (!gens) return null;
+    const first = (pc & mask) >>> 8;
+    const last = (pc + len - 1 & mask) >>> 8;
+    const pages = [];
+    const stamps = [];
+    for (let p = first; p <= last; p++) {
+      pages.push(region << 16 | p);
+      stamps.push(gens[p] | 0);
+    }
+    return { pages, stamps };
+  }
+  /** Re-stamp a block's page generations (after a checksum proved its bytes are unchanged). */
+  refreshPageGuard(block, pc) {
+    const pg = this.buildPageGuard(pc, block.guardLen);
+    if (pg) {
+      block.pages = pg.pages;
+      block.stamps = pg.stamps;
+    }
+  }
+  /** True if every page a block spans still has its compile-time generation (no writes since). */
+  pageGuardFresh(block) {
+    const m = this.bus;
+    const pages = block.pages;
+    const stamps = block.stamps;
+    for (let i = 0; i < pages.length; i++) {
+      const region = pages[i] >>> 16;
+      const p = pages[i] & 65535;
+      const gens = region === 3 ? m.iwramGen : m.ewramGen;
+      if ((gens[p] | 0) !== stamps[i]) return false;
+    }
+    return true;
+  }
+  // ---- store-block verification helpers ----
+  // Snapshot/restore/compare the writable guest RAM regions so store-bearing native blocks can be
+  // differentially verified against the reference interpreter on their first execution.
+  snapPool = [null, null];
+  /** Pooled snapshotRam: reuses two snapshot buffers (verify is not reentrant) to avoid GC churn. */
+  snapshotRamPooled(slot) {
+    const m = this.bus;
+    const io = m.io;
+    const ioSrc = io && io.regs ? io.regs : m.ioRegs ? m.ioRegs : null;
+    let s = this.snapPool[slot];
+    if (!s) {
+      s = this.snapPool[slot] = {
+        iwram: m.iwram ? m.iwram.slice() : null,
+        ewram: m.ewram ? m.ewram.slice() : null,
+        vram: m.vram ? m.vram.slice() : null,
+        palette: m.palette ? m.palette.slice() : null,
+        oam: m.oam ? m.oam.slice() : null,
+        ioRegs: ioSrc ? ioSrc.slice() : null
+      };
+      return s;
+    }
+    if (s.iwram) s.iwram.set(m.iwram);
+    if (s.ewram) s.ewram.set(m.ewram);
+    if (s.vram) s.vram.set(m.vram);
+    if (s.palette) s.palette.set(m.palette);
+    if (s.oam) s.oam.set(m.oam);
+    if (s.ioRegs && ioSrc) s.ioRegs.set(ioSrc);
+    return s;
+  }
+  snapshotRam() {
+    const m = this.bus;
+    const io = m.io;
+    return {
+      iwram: m.iwram ? m.iwram.slice() : null,
+      ewram: m.ewram ? m.ewram.slice() : null,
+      vram: m.vram ? m.vram.slice() : null,
+      palette: m.palette ? m.palette.slice() : null,
+      oam: m.oam ? m.oam.slice() : null,
+      // IO register file (live registers like IME/IF/VCOUNT) — captured so a load-bearing block's
+      // reference replay reads the exact same IO bytes native did.
+      ioRegs: io && io.regs ? io.regs.slice() : m.ioRegs ? m.ioRegs.slice() : null
+    };
+  }
+  restoreRam(s) {
+    const m = this.bus;
+    const io = m.io;
+    if (s.iwram) m.iwram.set(s.iwram);
+    if (s.ewram) m.ewram.set(s.ewram);
+    if (s.vram) m.vram.set(s.vram);
+    if (s.palette) m.palette.set(s.palette);
+    if (s.oam) m.oam.set(s.oam);
+    if (s.ioRegs) {
+      if (io && io.regs) io.regs.set(s.ioRegs);
+      else if (m.ioRegs) m.ioRegs.set(s.ioRegs);
+    }
+  }
+  ramEquals(s) {
+    const m = this.bus;
+    const eq = (a, b) => {
+      if (!a || !b) return true;
+      if (a.length !== b.length) return false;
+      if (typeof Buffer !== "undefined") return Buffer.compare(a, b) === 0;
+      const n = a.length >>> 2;
+      const a32 = new Int32Array(a.buffer, a.byteOffset, n);
+      const b32 = new Int32Array(b.buffer, b.byteOffset, n);
+      for (let i = 0; i < n; i++) if (a32[i] !== b32[i]) return false;
+      for (let i = n << 2; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
+    return eq(s.iwram, m.iwram) && eq(s.ewram, m.ewram) && eq(s.vram, m.vram) && eq(s.palette, m.palette) && eq(s.oam, m.oam);
+  }
   syncIn(st) {
+    this.i32[OFF_CYCLES >> 2] = 0;
     for (let i = 0; i < 16; i++) this.i32[regOff(i) >> 2] = st.r[i] | 0;
     this.i32[OFF_CPSR >> 2] = st.cpsr | 0;
     this.i32[OFF_NF >> 2] = st.cpsr & FLAG_N ? 1 : 0;
@@ -2543,6 +3550,7 @@ var Recompiler = class {
   }
   /** Copy shared WASM memory back into the interpreter ArmState + repack flags into CPSR. */
   syncOut(st) {
+    this.i32[OFF_CYCLES >> 2] = 0;
     for (let i = 0; i < 16; i++) st.r[i] = this.u32[regOff(i) >> 2] >>> 0;
     let cpsr = this.i32[OFF_CPSR >> 2] >>> 0;
     cpsr = (cpsr & ~(FLAG_N | FLAG_Z | FLAG_C | FLAG_V)) >>> 0;
@@ -2557,21 +3565,40 @@ var Recompiler = class {
    * Returns null if the very first instruction can't be lifted (caller should interpret one step).
    */
   compileBlock(pc) {
-    if (this.cache.has(pc)) return this.cache.get(pc);
+    const cached = this.cache.get(pc);
+    if (cached) {
+      if (cached.guard === 0) return cached;
+      if (cached.pages && this.pageGuardFresh(cached)) return cached;
+      if (this.checksumBytes(pc, cached.guardLen, false) === cached.guard) {
+        if (cached.pages) this.refreshPageGuard(cached, pc);
+        return cached;
+      }
+      this.cache.delete(pc);
+      this.smcInvalidations++;
+    } else if (this.cache.has(pc)) {
+      return this.cache.get(pc);
+    }
     if (this.cache.size >= this.MAX_CACHE) return null;
     const cb = new CodeBuilder();
     let cur = pc >>> 0;
     let count = 0;
     let endedByBranch = false;
     let hasStore = false;
-    const MAX = 256;
+    let hasLoad = false;
+    const MAX = globalThis.__ARM_MAXLEN || 256;
     while (count < MAX) {
       const instr = this.bus.read32(cur) >>> 0;
       if ((instr & 202375168) === 67108864) hasStore = true;
-      const res = liftArm(cb, instr, cur);
+      if ((instr & 202375168) === 68157440) hasLoad = true;
+      const mark = cb.bytes.length;
+      const res = liftArm(cb, instr, cur, this.liftCtx);
       if (res.status === "bail") {
+        cb.bytes.length = mark;
+        this.recordBail("A", res.reason);
         break;
       }
+      if (res.mayStore) hasStore = true;
+      if (res.mayLoad) hasLoad = true;
       count++;
       if (res.status === "endsBlock") {
         endedByBranch = true;
@@ -2604,10 +3631,20 @@ var Recompiler = class {
     const instance = new WebAssembly.Instance(module, {
       env: { mem: this.mem, ...this.hostImports() }
     });
+    const guardLen = count * 4;
+    const isRam = this.isRamCode(pc);
+    const guard = isRam ? this.checksumBytes(pc, guardLen, false) : 0;
+    const pg = isRam ? this.buildPageGuard(pc, guardLen) : null;
     const block = {
       startPc: pc,
       count,
       hasStore,
+      hasLoad,
+      guard,
+      guardLen,
+      pages: pg ? pg.pages : null,
+      stamps: pg ? pg.stamps : null,
+      verified: false,
       fn: instance.exports.block
     };
     this.cache.set(pc, block);
@@ -2621,22 +3658,46 @@ var Recompiler = class {
    * both modes (it won't in practice, but keeping them separate is correctness-safe).
    */
   compileBlockThumb(pc) {
-    if (this.cacheThumb.has(pc)) return this.cacheThumb.get(pc);
+    const cached = this.cacheThumb.get(pc);
+    if (cached) {
+      if (cached.guard === 0) return cached;
+      if (cached.pages && this.pageGuardFresh(cached)) return cached;
+      if (this.checksumBytes(pc, cached.guardLen, true) === cached.guard) {
+        if (cached.pages) this.refreshPageGuard(cached, pc);
+        return cached;
+      }
+      this.cacheThumb.delete(pc);
+      this.smcInvalidations++;
+    } else if (this.cacheThumb.has(pc)) {
+      return this.cacheThumb.get(pc);
+    }
     if (this.cacheThumb.size >= this.MAX_CACHE) return null;
     const cb = new CodeBuilder();
     let cur = pc >>> 0;
     let count = 0;
     let endedByBranch = false;
     let hasStore = false;
-    const MAX = 256;
+    let hasLoad = false;
+    const MAX = globalThis.__THUMB_MAXLEN || 256;
     while (count < MAX) {
       const instr = this.bus.read16(cur) & 65535;
       const top = instr >>> 13;
       if (top === 3 && (instr & 2048) === 0) hasStore = true;
       else if (top === 4 && (instr & 61440) === 32768 && (instr & 2048) === 0) hasStore = true;
       else if (top === 4 && (instr & 61440) !== 32768 && (instr & 2048) === 0) hasStore = true;
-      const res = liftThumb(cb, instr, cur);
-      if (res.status === "bail") break;
+      if (top === 3 && (instr & 2048) !== 0) hasLoad = true;
+      else if (top === 4 && (instr & 2048) !== 0) hasLoad = true;
+      else if ((instr & 63488) === 18432) hasLoad = true;
+      else if (top === 2 && (instr & 3584) === 2048 && (instr & 512) !== 0) hasLoad = true;
+      const mark = cb.bytes.length;
+      const res = liftThumb(cb, instr, cur, this.liftCtx);
+      if (res.status === "bail") {
+        cb.bytes.length = mark;
+        this.recordBail("T", res.reason);
+        break;
+      }
+      if (res.mayStore) hasStore = true;
+      if (res.mayLoad) hasLoad = true;
       count++;
       if (res.status === "endsBlock") {
         endedByBranch = true;
@@ -2669,10 +3730,20 @@ var Recompiler = class {
     const instance = new WebAssembly.Instance(module, {
       env: { mem: this.mem, ...this.hostImports() }
     });
+    const guardLen = count * 2;
+    const isRam = this.isRamCode(pc);
+    const guard = isRam ? this.checksumBytes(pc, guardLen, true) : 0;
+    const pg = isRam ? this.buildPageGuard(pc, guardLen) : null;
     const block = {
       startPc: pc,
       count,
       hasStore,
+      hasLoad,
+      guard,
+      guardLen,
+      pages: pg ? pg.pages : null,
+      stamps: pg ? pg.stamps : null,
+      verified: false,
       fn: instance.exports.block
     };
     this.cacheThumb.set(pc, block);
@@ -2690,14 +3761,20 @@ var Recompiler = class {
     const pc = cpu.st.r[15] >>> 0;
     const block = cpu.st.thumb ? this.compileBlockThumb(pc) : this.compileBlock(pc);
     if (!block) return 0;
-    const verifyKey = ((cpu.st.thumb ? 2147483648 : 0) | pc) >>> 0;
-    if (this.verifyFirstRun && !this.verified.has(verifyKey) && !block.hasStore) {
+    if (this.verifyFirstRun && !block.verified) {
       const snapR = Int32Array.from(cpu.st.r);
       const snapCpsr = cpu.st.cpsr >>> 0;
+      const needSnap = block.hasStore || block.hasLoad;
+      const memSnap = needSnap ? this.snapshotRamPooled(0) : null;
       this.syncIn(cpu.st);
       const nextPc2 = block.fn() >>> 0;
       this.syncOut(cpu.st);
       cpu.st.r[15] = nextPc2 >>> 0;
+      let nativeMem = null;
+      if (memSnap) {
+        if (block.hasStore) nativeMem = this.snapshotRamPooled(1);
+        this.restoreRam(memSnap);
+      }
       const ref = new ArmCore(this.bus);
       ref.st.r.set(snapR);
       ref.st.cpsr = snapCpsr;
@@ -2712,7 +3789,19 @@ var Recompiler = class {
       }
       const FLAGS = FLAG_N | FLAG_Z | FLAG_C | FLAG_V;
       if (ok && (ref.st.cpsr & FLAGS) !== (cpu.st.cpsr & FLAGS)) ok = false;
+      if (ok && nativeMem && !this.ramEquals(nativeMem)) ok = false;
       if (!ok) {
+        if (globalThis.__RECOMP_DEBUG) {
+          const diffs = [];
+          for (let i = 0; i < 15; i++) if (ref.st.r[i] >>> 0 !== cpu.st.r[i] >>> 0) diffs.push(`r${i}:int=${(ref.st.r[i] >>> 0).toString(16)} wasm=${(cpu.st.r[i] >>> 0).toString(16)}`);
+          if (ref.st.r[15] >>> 0 !== cpu.st.r[15] >>> 0) diffs.push(`pc:int=${(ref.st.r[15] >>> 0).toString(16)} wasm=${(cpu.st.r[15] >>> 0).toString(16)}`);
+          const FF = FLAG_N | FLAG_Z | FLAG_C | FLAG_V;
+          if ((ref.st.cpsr & FF) !== (cpu.st.cpsr & FF)) diffs.push(`flags:int=${(ref.st.cpsr & FF).toString(16)} wasm=${(cpu.st.cpsr & FF).toString(16)}`);
+          const fmt = cpu.st.thumb ? "THUMB" : "ARM";
+          const first = cpu.st.thumb ? this.bus.read16(pc).toString(16) : this.bus.read32(pc).toString(16);
+          console.error(`[recomp-reject] ${fmt} pc=0x${pc.toString(16)} count=${block.count} firstInstr=0x${first} :: ${diffs.join(" | ")}`);
+        }
+        if (memSnap) this.restoreRam(memSnap);
         cpu.st.r.set(snapR);
         cpu.st.cpsr = snapCpsr;
         cpu.st.r[15] = pc;
@@ -2720,16 +3809,32 @@ var Recompiler = class {
         this.blocksRejected++;
         return 0;
       }
-      this.verified.add(verifyKey);
+      block.verified = true;
       this.nativeInstrs += block.count;
       return block.count;
     }
     this.syncIn(cpu.st);
-    const nextPc = block.fn() >>> 0;
+    const CHAIN_BUDGET = 256;
+    let total = 0;
+    let nextPc = 0;
+    let cur = block;
+    for (; ; ) {
+      nextPc = cur.fn() >>> 0;
+      total += cur.count;
+      if (total >= CHAIN_BUDGET) break;
+      if (cpu.halted) break;
+      if (this.chainStops.has(nextPc)) break;
+      const thumbNow = (this.i32[OFF_CPSR >> 2] & 32) !== 0;
+      const nb = thumbNow ? this.compileBlockThumb(nextPc) : this.compileBlock(nextPc);
+      if (!nb) break;
+      if (this.verifyFirstRun && !nb.verified) break;
+      if (total + nb.count > CHAIN_BUDGET) break;
+      cur = nb;
+    }
     this.syncOut(cpu.st);
     cpu.st.r[15] = nextPc >>> 0;
-    this.nativeInstrs += block.count;
-    return block.count;
+    this.nativeInstrs += total;
+    return total;
   }
 };
 
@@ -2750,6 +3855,16 @@ var GbaMemory = class {
   io = null;
   // Raw IO register backing store for simple registers the IoBus doesn't intercept.
   ioRegs = new Uint8Array(1024);
+  // ---- self-modifying-code page generations ----
+  // Every write to IWRAM/EWRAM stamps its 256-byte page with a fresh generation number. The
+  // recompiler records the generations of the pages a RAM block spans at compile time and
+  // compares them on every dispatch — an O(pages) (≈O(1)) exactness guard that replaces the
+  // old O(blockLen) FNV re-checksum on every cache hit.
+  iwramGen = new Uint32Array(32768 >>> 8);
+  // 128 pages
+  ewramGen = new Uint32Array(262144 >>> 8);
+  // 1024 pages
+  genCounter = 1;
   loadRom(bytes) {
     this.rom = bytes;
   }
@@ -2824,12 +3939,18 @@ var GbaMemory = class {
     value &= 255;
     const region = addr >>> 24 & 255;
     switch (region) {
-      case 2:
-        this.ewram[addr & 262143] = value;
+      case 2: {
+        const o = addr & 262143;
+        this.ewram[o] = value;
+        this.ewramGen[o >>> 8] = ++this.genCounter;
         break;
-      case 3:
-        this.iwram[addr & 32767] = value;
+      }
+      case 3: {
+        const o = addr & 32767;
+        this.iwram[o] = value;
+        this.iwramGen[o >>> 8] = ++this.genCounter;
         break;
+      }
       case 4:
         if (this.io) this.io.writeIo8(addr & 16777215, value);
         else this.ioRegs[addr & 1023] = value;
@@ -2989,6 +4110,12 @@ var GbaIo = class {
   ifAckHook = null;
   haltHook = null;
   fifoWriteHook = null;
+  /** Lazy live-counter hook for timer CNT_L reads (installed by the runtime). */
+  timerReadHook = null;
+  /** Lazy live VCOUNT read (returns 0..227). Installed by the runtime for exact mid-block polls. */
+  vcountReadHook = null;
+  /** Lazy live DISPSTAT read (status bits 0-2 recomputed). Installed by the runtime. */
+  dispstatReadHook = null;
   get16(off) {
     return this.regs[(off & 1023) >> 1];
   }
@@ -2999,6 +4126,19 @@ var GbaIo = class {
     const off = addr & 1023;
     if (off === REG.IF || off === REG.IF + 1) {
       const v = this.ifReadHook ? this.ifReadHook() : this.get16(REG.IF);
+      return off & 1 ? v >>> 8 & 255 : v & 255;
+    }
+    if (off >= REG.TM0CNT_L && off <= REG.TM3CNT_L + 1 && (off & 2) === 0 && this.timerReadHook) {
+      const ch = off - REG.TM0CNT_L >> 2;
+      const v = this.timerReadHook(ch);
+      return off & 1 ? v >>> 8 & 255 : v & 255;
+    }
+    if ((off === REG.VCOUNT || off === REG.VCOUNT + 1) && this.vcountReadHook) {
+      const v = this.vcountReadHook();
+      return off & 1 ? v >>> 8 & 255 : v & 255;
+    }
+    if ((off === REG.DISPSTAT || off === REG.DISPSTAT + 1) && this.dispstatReadHook) {
+      const v = this.dispstatReadHook();
       return off & 1 ? v >>> 8 & 255 : v & 255;
     }
     const hw = this.get16(off & ~1);
@@ -3510,6 +4650,83 @@ var GbaPpu = class {
       this.io.set16(REG.DISPSTAT, ds);
     }
   }
+  /**
+   * Cycles until the PPU would next raise an ENABLED interrupt (HBlank/VCount/VBlank). Returns
+   * Infinity if no PPU IRQ source is enabled. Used by the recompiler fast-path to avoid running a
+   * native block across an IRQ-delivery boundary (which would service the IRQ at a slightly later
+   * PC than the interpreter, causing a 1-instruction timing slip). When an event is within reach we
+   * single-step instead, preserving bit-exact IRQ timing while keeping native speed elsewhere.
+   */
+  cyclesUntilIrq() {
+    const ds = this.io.get16(REG.DISPSTAT);
+    const hbEn = (ds & DS_HBLANK_IRQ) !== 0;
+    const vcEn = (ds & DS_VCOUNT_IRQ) !== 0;
+    const vbEn = (ds & DS_VBLANK_IRQ) !== 0;
+    if (!hbEn && !vcEn && !vbEn) return Infinity;
+    const lyc = ds >> 8 & 255;
+    const sc = this.scanlineCycles;
+    const cur = this.vcount;
+    let best = Infinity;
+    if (hbEn && !this.inHblank && sc < HDRAW_CYCLES) best = HDRAW_CYCLES - sc;
+    const toLineEnd = CYCLES_PER_SCANLINE - sc;
+    if (vcEn && lyc < TOTAL_SCANLINES) {
+      const k = (lyc - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
+      const cyc = toLineEnd + k * CYCLES_PER_SCANLINE;
+      if (cyc < best) best = cyc;
+    }
+    if (vbEn) {
+      const k = (SCREEN_H - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
+      const cyc = toLineEnd + k * CYCLES_PER_SCANLINE;
+      if (cyc < best) best = cyc;
+    }
+    return best;
+  }
+  /**
+   * Cycles until the next frame-latch boundary: the scanline-end where VCOUNT becomes 160 (VBlank
+   * start, where frameReady flips and the framebuffer is sampled) OR wraps to 0 (next frame start,
+   * where DS_VBLANK clears). The native fast-path single-steps near these so both interpreter and
+   * recompiler latch the framebuffer at exactly the same guest instruction, regardless of whether
+   * a VBlank IRQ is enabled. Returns Infinity only if cycles-per-scanline is misconfigured.
+   */
+  /**
+   * EXACT VCOUNT as-of `pendingCycles` CPU cycles beyond the last hardware sync, without mutating
+   * state. During native (recompiled) execution the runtime advances the PPU only at block
+   * boundaries, so a mid-block VCOUNT read (games poll this tens of thousands of times per frame)
+   * would otherwise be stale by up to a block's worth of cycles, drifting derived counters by 1.
+   * On the interpreter path pendingCycles is 0, returning the current per-instruction value.
+   */
+  liveVcount(pendingCycles) {
+    const total = this.scanlineCycles + (pendingCycles | 0);
+    const linesAhead = Math.floor(total / CYCLES_PER_SCANLINE);
+    if (linesAhead <= 0) return this.vcount & 255;
+    return (this.vcount + linesAhead) % TOTAL_SCANLINES & 255;
+  }
+  /**
+   * EXACT DISPSTAT (VBlank/HBlank/VCount-match status bits, bits 0-2) as-of `pendingCycles` beyond
+   * the last sync, without mutating state. The IRQ-enable bits (3-5) and LYC (8-15) are static and
+   * come straight from the stored register. Mirrors liveVcount for mid-block DISPSTAT polls.
+   */
+  liveDispstat(pendingCycles) {
+    const stored = this.io.get16(REG.DISPSTAT);
+    const total = this.scanlineCycles + (pendingCycles | 0);
+    const linesAhead = Math.floor(total / CYCLES_PER_SCANLINE);
+    const line = (this.vcount + linesAhead) % TOTAL_SCANLINES;
+    const cyc = total - linesAhead * CYCLES_PER_SCANLINE;
+    let status = stored & ~7;
+    if (line >= SCREEN_H) status |= DS_VBLANK;
+    if (cyc >= HDRAW_CYCLES) status |= DS_HBLANK;
+    const lyc = stored >> 8 & 255;
+    if (line === lyc) status |= DS_VCOUNT;
+    return status & 65535;
+  }
+  cyclesUntilFrameLatch() {
+    const sc = this.scanlineCycles;
+    const toLineEnd = CYCLES_PER_SCANLINE - sc;
+    const cur = this.vcount;
+    const kVb = (SCREEN_H - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
+    const kZero = (0 - cur - 1 + TOTAL_SCANLINES) % TOTAL_SCANLINES;
+    return toLineEnd + (kVb < kZero ? kVb : kZero) * CYCLES_PER_SCANLINE;
+  }
   // ---- rendering ----
   putPixel(x, y, rgb15) {
     const o = (y * SCREEN_W + x) * 4;
@@ -3742,8 +4959,8 @@ var GbaPpu = class {
       const a1 = this.mem.oam16(i * 8 + 2);
       const a2 = this.mem.oam16(i * 8 + 4);
       const affine = (a0 & 256) !== 0;
-      const disabled = !affine && (a0 & 512) !== 0;
-      if (disabled) continue;
+      const disabled2 = !affine && (a0 & 512) !== 0;
+      if (disabled2) continue;
       const doubleSize = affine && (a0 & 512) !== 0;
       const objMode = a0 >> 10 & 3;
       const isObjWindow = objMode === 2;
@@ -4003,6 +5220,39 @@ var GbaTimers = class {
     }
     this.enabled[ch] = en;
   }
+  /**
+   * Compute the EXACT counter value for channel `ch` as if it had been advanced by `pendingCycles`
+   * additional CPU cycles beyond the last sync, WITHOUT mutating timer state. Used by the lazy
+   * timer-read hook so that a timer CNT_L read mid-way through a native (recompiled) block returns
+   * the same value the per-instruction interpreter would, even though the runtime only calls
+   * step() at block boundaries. Handles prescaler division and overflow wrap (reload on overflow).
+   * Count-up (cascade) timers are not cycle-driven, so we return their last synced value.
+   */
+  liveCounter(ch, pendingCycles) {
+    if (!this.enabled[ch]) return this.counter[ch] & 65535;
+    const ctrl = this.io.get16(this.CNT_H[ch]);
+    if (ch > 0 && (ctrl & 4) !== 0) return this.counter[ch] & 65535;
+    const ps = PRESCALER[ctrl & 3];
+    const totalSub = this.subcycle[ch] + (pendingCycles | 0);
+    const ticks = Math.floor(totalSub / ps);
+    if (ticks <= 0) return this.counter[ch] & 65535;
+    const span = 65536 - this.reload[ch];
+    let c = this.counter[ch] + ticks;
+    if (c > 65535) {
+      c = this.reload[ch] + (c - 65536) % span;
+    }
+    return c & 65535;
+  }
+  /** True if any non-cascade timer is currently enabled (its CNT_L is a live, cycle-driven value). */
+  anyEnabled() {
+    for (let ch = 0; ch < 4; ch++) {
+      if (!this.enabled[ch]) continue;
+      const ctrl = this.io.get16(this.CNT_H[ch]);
+      if (ch > 0 && (ctrl & 4) !== 0) continue;
+      return true;
+    }
+    return false;
+  }
   step(cycles) {
     for (let ch = 0; ch < 4; ch++) {
       if (!this.enabled[ch]) continue;
@@ -4011,9 +5261,25 @@ var GbaTimers = class {
       if (countUp) continue;
       const ps = PRESCALER[ctrl & 3];
       this.subcycle[ch] += cycles;
-      while (this.subcycle[ch] >= ps) {
-        this.subcycle[ch] -= ps;
-        this.tick(ch, ctrl);
+      let ticks = this.subcycle[ch] / ps | 0;
+      if (ticks > 0) {
+        this.subcycle[ch] -= ticks * ps;
+        while (ticks > 0) {
+          const toOverflow = 65536 - this.counter[ch];
+          if (ticks < toOverflow) {
+            this.counter[ch] += ticks;
+            ticks = 0;
+            break;
+          }
+          ticks -= toOverflow;
+          this.counter[ch] = this.reload[ch];
+          this.onOverflow(ch);
+          if (ctrl & 64) this.requestIrq(IRQ_TIMER[ch]);
+          if (ch < 3) {
+            const nextCtrl = this.io.get16(this.CNT_H[ch + 1]);
+            if (this.enabled[ch + 1] && nextCtrl & 4) this.cascadeTick(ch + 1, nextCtrl);
+          }
+        }
       }
       this.io.set16(this.CNT_L[ch], this.counter[ch] & 65535);
     }
@@ -4644,6 +5910,9 @@ var GbaMachine = class {
     this.mem.flash = this.flash;
     this.cpu = new ArmCore(this.mem);
     this.recompiler = new Recompiler(this.mem);
+    for (let d = 0; d < 4; d++) this.recompiler.chainStops.add(316 + d * 4 >>> 0);
+    this.recompiler.chainStops.add(136182424);
+    for (const p of [134257318, 134257320, 134257322, 134257324]) this.recompiler.chainStops.add(p);
     this.header = parseHeader(rom);
     this.rtc = new GbaRtc();
     this.mem.rtc = this.rtc;
@@ -4875,7 +6144,8 @@ var GbaMachine = class {
       }
       return hleCycles;
     }
-    if (this.useRecompiler && this.recompiler && !this.cpu.st.thumb && !this.cpu.halted) {
+    const irqSafe = this.cpu.halted ? true : this.ppu.cyclesUntilIrq() > 320 && this.ppu.cyclesUntilFrameLatch() > 320 && !(globalThis.__NO_NATIVE_WHEN_TIMERS && this.timers.anyEnabled());
+    if (this.useRecompiler && this.recompiler && !this.cpu.halted && irqSafe) {
       const n = this.recompiler.tryRunNative(this.cpu);
       if (n > 0) {
         this.cpu.cycles += n;
@@ -4916,7 +6186,8 @@ var GbaMachine = class {
     const liveSet = this._liveSet;
     liveSet.clear();
     let liveSamples = 0;
-    while (cyclesThisFrame < CYCLES_PER_FRAME && guard < 4e6) {
+    const FRAME_CAP = CYCLES_PER_FRAME + CYCLES_PER_FRAME;
+    while (!this.ppu.frameReady && cyclesThisFrame < FRAME_CAP && guard < 4e6) {
       if (this.cpu.halted) {
         const c2 = 8;
         this.ppu.step(c2);
