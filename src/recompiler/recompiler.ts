@@ -57,6 +57,8 @@ export interface CompiledBlock {
   stamps: number[] | null;
   /** Set once the first-run differential verification has passed for THIS compilation. */
   verified: boolean;
+  /** Number of times this block has been dispatched natively (read by the debugger UI). */
+  execs: number;
   /** the exported function: () -> nextPc. */
   fn: () => number;
 }
@@ -389,6 +391,7 @@ export class Recompiler {
       pages: pg ? pg.pages : null,
       stamps: pg ? pg.stamps : null,
       verified: false,
+      execs: 0,
       fn: instance.exports.block as () => number,
     };
     this.cache.set(pc, block);
@@ -498,6 +501,7 @@ export class Recompiler {
       pages: pg ? pg.pages : null,
       stamps: pg ? pg.stamps : null,
       verified: false,
+      execs: 0,
       fn: instance.exports.block as () => number,
     };
     this.cacheThumb.set(pc, block);
@@ -597,6 +601,7 @@ export class Recompiler {
       // Passed. For store blocks, RAM currently holds the reference result which is byte-identical
       // to the native result, so no further action is needed.
       block.verified = true;
+      block.execs++;
       this.nativeInstrs += block.count;
       return block.count;
     }
@@ -614,6 +619,7 @@ export class Recompiler {
     let nextPc = 0;
     let cur: CompiledBlock = block;
     for (;;) {
+      cur.execs++;
       nextPc = cur.fn() >>> 0;
       total += cur.count;
       if (total >= CHAIN_BUDGET) break;

@@ -127,6 +127,7 @@
       <button class="ctl" id="btn-clear-save">Clear Save</button>
       <button class="ctl" id="btn-export-save">Export Save</button>
       <button class="ctl" id="btn-shot">⧉ Screenshot</button>
+      <button class="ctl" id="btn-debug" title="Live CPU/JIT/sprite/IO inspector (F9)">⛏ Debug</button>
       <select id="speed" title="Emulation speed">
         <option value="0.5">0.5×</option>
         <option value="1" selected>1×</option>
@@ -165,7 +166,7 @@
     <div class="keymap">
       <span><b>Z</b> A</span><span><b>X</b> B</span><span><b>Enter</b> Start</span>
       <span><b>Shift</b> Select</span><span><b>A</b> L</span><span><b>S</b> R</span>
-      <span><b>Arrows</b> D-Pad</span><span><b>Space</b> Pause</span>
+      <span><b>Arrows</b> D-Pad</span><span><b>Space</b> Pause</span><span><b>F9</b> Debugger</span>
     </div>
   </section>
 
@@ -174,6 +175,6 @@
     PPU, DMA, timers, interrupts, Flash saves. Built to bring Pokémon Ruby/Sapphire/Emerald to the browser.
   </footer>
 
-  <script type="module" src="./js/gba.js?v=20260606-irqlrthumbfix"></script>
+  <script type="module" src="./js/gba.js?v=20260610-debugger"></script>
 </body>
 </html>

@@ -10,6 +10,7 @@
  */
 
 import { GbaMachine } from '../runtime/machine.ts';
+import { DebugPanel } from './debug.ts';
 
 const SCREEN_W = 240, SCREEN_H = 160;
 
@@ -107,6 +108,8 @@ class Frontend {
   onStatus: (s: string) => void = () => {};
   onFps: (n: number) => void = () => {};
   onSaveStatus: (s: string) => void = () => {};
+  /** Called after every emulated frame with the live machine (used by the debugger panel). */
+  onFrame: (m: GbaMachine) => void = () => {};
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -190,6 +193,7 @@ class Frontend {
     for (let i = 0; i < budget; i++) {
       this.applyKeys();
       this.machine.runFrame();
+      this.onFrame(this.machine);
       this.audio.push(this.machine.audio.drainSamples(4096));
       this.flushBatterySave(false);
       if ((this.frameCounter & 31) === 0) this.updateSaveStatus();
@@ -406,6 +410,7 @@ function boot() {
   speedSel?.addEventListener('change', () => { fe.speed = parseFloat(speedSel.value); });
 
   (window as any).GBA = fe;
+  (window as any).GBA_DEBUG = new DebugPanel(fe);
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

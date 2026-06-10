@@ -3645,6 +3645,7 @@ var Recompiler = class {
       pages: pg ? pg.pages : null,
       stamps: pg ? pg.stamps : null,
       verified: false,
+      execs: 0,
       fn: instance.exports.block
     };
     this.cache.set(pc, block);
@@ -3744,6 +3745,7 @@ var Recompiler = class {
       pages: pg ? pg.pages : null,
       stamps: pg ? pg.stamps : null,
       verified: false,
+      execs: 0,
       fn: instance.exports.block
     };
     this.cacheThumb.set(pc, block);
@@ -3810,6 +3812,7 @@ var Recompiler = class {
         return 0;
       }
       block.verified = true;
+      block.execs++;
       this.nativeInstrs += block.count;
       return block.count;
     }
@@ -3819,6 +3822,7 @@ var Recompiler = class {
     let nextPc = 0;
     let cur = block;
     for (; ; ) {
+      cur.execs++;
       nextPc = cur.fn() >>> 0;
       total += cur.count;
       if (total >= CHAIN_BUDGET) break;
@@ -6226,6 +6230,734 @@ var GbaMachine = class {
 };
 var BIOS_IRQ_RETURN = 316;
 
+// src/browser/disasm.ts
+var CC = ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "", "nv"];
+var DP = ["and", "eor", "sub", "rsb", "add", "adc", "sbc", "rsc", "tst", "teq", "cmp", "cmn", "orr", "mov", "bic", "mvn"];
+var SH = ["lsl", "lsr", "asr", "ror"];
+function R(n) {
+  return n === 13 ? "sp" : n === 14 ? "lr" : n === 15 ? "pc" : "r" + n;
+}
+function hx(n) {
+  return "0x" + (n >>> 0).toString(16);
+}
+function rlist(list, max = 16) {
+  const parts = [];
+  for (let i = 0; i < max; i++) {
+    if (!(list & 1 << i)) continue;
+    let j = i;
+    while (j + 1 < max && list & 1 << j + 1) j++;
+    parts.push(j > i + 1 ? `${R(i)}-${R(j)}` : j === i + 1 ? `${R(i)}, ${R(j)}` : R(i));
+    i = j;
+  }
+  return "{" + parts.join(", ") + "}";
+}
+function op2reg(i) {
+  const rm = R(i & 15);
+  const stype = i >>> 5 & 3;
+  if (i & 16) return `${rm}, ${SH[stype]} ${R(i >>> 8 & 15)}`;
+  const amt = i >>> 7 & 31;
+  if (amt === 0 && stype === 0) return rm;
+  if (amt === 0 && stype === 3) return `${rm}, rrx`;
+  return `${rm}, ${SH[stype]} #${amt === 0 ? 32 : amt}`;
+}
+function disasmArm(i, pc) {
+  i >>>= 0;
+  const c = CC[i >>> 28 & 15];
+  if ((i >>> 28 & 15) === 15) return ".word " + hx(i);
+  if ((i & 268435440) === 19922704) return `bx${c} ${R(i & 15)}`;
+  if ((i & 234881024) === 167772160) {
+    let off = i & 16777215;
+    if (off & 8388608) off |= 4278190080;
+    return `${i & 16777216 ? "bl" : "b"}${c} ${hx(pc + 8 + (off << 2) >>> 0)}`;
+  }
+  if ((i & 251658240) === 251658240) return `swi${c} ${hx(i >>> 16 & 255)}`;
+  if ((i & 264241392) === 144) {
+    const s = i & 1048576 ? "s" : "";
+    const rd = R(i >>> 16 & 15), rm = R(i & 15), rs = R(i >>> 8 & 15), rn = R(i >>> 12 & 15);
+    return i & 2097152 ? `mla${c}${s} ${rd}, ${rm}, ${rs}, ${rn}` : `mul${c}${s} ${rd}, ${rm}, ${rs}`;
+  }
+  if ((i & 260047088) === 8388752) {
+    const nm = (i & 4194304 ? "s" : "u") + (i & 2097152 ? "mlal" : "mull");
+    const s = i & 1048576 ? "s" : "";
+    return `${nm}${c}${s} ${R(i >>> 12 & 15)}, ${R(i >>> 16 & 15)}, ${R(i & 15)}, ${R(i >>> 8 & 15)}`;
+  }
+  if ((i & 263196656) === 16777360) return `swp${c}${i & 4194304 ? "b" : ""} ${R(i >>> 12 & 15)}, ${R(i & 15)}, [${R(i >>> 16 & 15)}]`;
+  if ((i & 234881168) === 144 && (i & 96) !== 0) {
+    const pre = !!(i & 16777216), up = !!(i & 8388608), imm = !!(i & 4194304), wb = !!(i & 2097152), ld = !!(i & 1048576);
+    const sh = i >>> 5 & 3;
+    const nm = ld ? sh === 1 ? "ldrh" : sh === 2 ? "ldrsb" : "ldrsh" : "strh";
+    const off = imm ? "#" + (up ? "" : "-") + (i >>> 4 & 240 | i & 15) : (up ? "" : "-") + R(i & 15);
+    const rn = R(i >>> 16 & 15), rd = R(i >>> 12 & 15);
+    return pre ? `${nm}${c} ${rd}, [${rn}, ${off}]${wb ? "!" : ""}` : `${nm}${c} ${rd}, [${rn}], ${off}`;
+  }
+  if ((i & 201326592) === 0) {
+    const op = i >>> 21 & 15, S = !!(i & 1048576);
+    if (!S && op >= 8 && op <= 11) {
+      const spsr = !!(i & 4194304);
+      if (op === 8 || op === 10) return `mrs${c} ${R(i >>> 12 & 15)}, ${spsr ? "spsr" : "cpsr"}`;
+      const f = i >>> 16 & 15;
+      const fields = (f & 1 ? "c" : "") + (f & 2 ? "x" : "") + (f & 4 ? "s" : "") + (f & 8 ? "f" : "");
+      const src = i & 33554432 ? "#" + hx(armImmValue(i)) : R(i & 15);
+      return `msr${c} ${spsr ? "spsr" : "cpsr"}_${fields || "all"}, ${src}`;
+    }
+    const o2 = i & 33554432 ? "#" + hx(armImmValue(i)) : op2reg(i);
+    const rn = R(i >>> 16 & 15), rd = R(i >>> 12 & 15);
+    const s = S ? "s" : "";
+    if (op >= 8 && op <= 11) return `${DP[op]}${c} ${rn}, ${o2}`;
+    if (op === 13 || op === 15) return `${DP[op]}${c}${s} ${rd}, ${o2}`;
+    return `${DP[op]}${c}${s} ${rd}, ${rn}, ${o2}`;
+  }
+  if ((i & 201326592) === 67108864) {
+    const I = !!(i & 33554432), pre = !!(i & 16777216), up = !!(i & 8388608), B = !!(i & 4194304), W = !!(i & 2097152), L = !!(i & 1048576);
+    const nm = (L ? "ldr" : "str") + (B ? "b" : "");
+    const rn = R(i >>> 16 & 15), rd = R(i >>> 12 & 15);
+    const off = I ? (up ? "" : "-") + op2reg(i) : "#" + (up ? "" : "-") + (i & 4095);
+    return pre ? `${nm}${c} ${rd}, [${rn}${i & 4095 || I ? ", " + off : ""}]${W ? "!" : ""}` : `${nm}${c} ${rd}, [${rn}], ${off}`;
+  }
+  if ((i & 234881024) === 134217728) {
+    const pre = !!(i & 16777216), up = !!(i & 8388608), W = !!(i & 2097152), L = !!(i & 1048576);
+    const rn = i >>> 16 & 15;
+    const list = rlist(i & 65535);
+    if (L && rn === 13 && !pre && up && W) return `pop${c} ${list}`;
+    if (!L && rn === 13 && pre && !up && W) return `push${c} ${list}`;
+    const mode = up ? pre ? "ib" : "ia" : pre ? "db" : "da";
+    return `${L ? "ldm" : "stm"}${c}${mode} ${R(rn)}${W ? "!" : ""}, ${list}${i & 4194304 ? "^" : ""}`;
+  }
+  return ".word " + hx(i);
+}
+function armImmValue(i) {
+  const imm = i & 255, rot = (i >> 8 & 15) * 2;
+  return rot === 0 ? imm : (imm >>> rot | imm << 32 - rot) >>> 0;
+}
+var T_ALU = ["and", "eor", "lsl", "lsr", "asr", "adc", "sbc", "ror", "tst", "neg", "cmp", "cmn", "orr", "mul", "bic", "mvn"];
+function disasmThumb(i, pc) {
+  i &= 65535;
+  const top = i >>> 13;
+  if (top === 0) {
+    const op = i >>> 11 & 3;
+    const rd = R(i & 7), rs = R(i >>> 3 & 7);
+    if (op === 3) {
+      const rnImm = i >>> 6 & 7;
+      const nm = i & 512 ? "sub" : "add";
+      return i & 1024 ? `${nm} ${rd}, ${rs}, #${rnImm}` : `${nm} ${rd}, ${rs}, ${R(rnImm)}`;
+    }
+    return `${SH[op]} ${rd}, ${rs}, #${i >>> 6 & 31}`;
+  }
+  if (top === 1) {
+    const op = ["mov", "cmp", "add", "sub"][i >>> 11 & 3];
+    return `${op} ${R(i >>> 8 & 7)}, #${i & 255}`;
+  }
+  if (top === 2) {
+    if ((i & 64512) === 16384) {
+      const op = i >>> 6 & 15;
+      return `${T_ALU[op]} ${R(i & 7)}, ${R(i >>> 3 & 7)}`;
+    }
+    if ((i & 64512) === 17408) {
+      const op = i >>> 8 & 3;
+      let rd2 = (i & 7) + (i & 128 ? 8 : 0);
+      const rs = (i >>> 3 & 7) + (i & 64 ? 8 : 0);
+      if (op === 3) return `bx ${R(rs)}`;
+      return `${["add", "cmp", "mov"][op]} ${R(rd2)}, ${R(rs)}`;
+    }
+    if ((i & 63488) === 18432) {
+      const addr = (pc + 4 & ~3) + ((i & 255) << 2) >>> 0;
+      return `ldr ${R(i >>> 8 & 7)}, [pc, #${(i & 255) << 2}]  ; ${hx(addr)}`;
+    }
+    const ro = R(i >>> 6 & 7), rb = R(i >>> 3 & 7), rd = R(i & 7);
+    if ((i & 512) === 0) {
+      const nm2 = (i & 2048 ? "ldr" : "str") + (i & 1024 ? "b" : "");
+      return `${nm2} ${rd}, [${rb}, ${ro}]`;
+    }
+    const nm = [i & 2048 ? "ldrh" : "strh", i & 2048 ? "ldrsh" : "ldrsb"][i >>> 10 & 1];
+    return `${nm} ${rd}, [${rb}, ${ro}]`;
+  }
+  if (top === 3) {
+    const byte = !!(i & 4096);
+    const nm = (i & 2048 ? "ldr" : "str") + (byte ? "b" : "");
+    const off = i >>> 6 & 31;
+    return `${nm} ${R(i & 7)}, [${R(i >>> 3 & 7)}, #${byte ? off : off << 2}]`;
+  }
+  if (top === 4) {
+    if ((i & 61440) === 32768) {
+      return `${i & 2048 ? "ldrh" : "strh"} ${R(i & 7)}, [${R(i >>> 3 & 7)}, #${(i >>> 6 & 31) << 1}]`;
+    }
+    return `${i & 2048 ? "ldr" : "str"} ${R(i >>> 8 & 7)}, [sp, #${(i & 255) << 2}]`;
+  }
+  if (top === 5) {
+    if ((i & 61440) === 40960) {
+      return `add ${R(i >>> 8 & 7)}, ${i & 2048 ? "sp" : "pc"}, #${(i & 255) << 2}`;
+    }
+    if ((i & 65280) === 45056) return `${i & 128 ? "sub" : "add"} sp, #${(i & 127) << 2}`;
+    if ((i & 62976) === 46080) {
+      const pop = !!(i & 2048);
+      let list = i & 255;
+      let extra = "";
+      if (i & 256) extra = (list ? ", " : "") + (pop ? "pc" : "lr");
+      return `${pop ? "pop" : "push"} {${rlist(list, 8).slice(1, -1)}${extra}}`;
+    }
+    return ".hword " + hx(i);
+  }
+  if (top === 6) {
+    if ((i & 61440) === 49152) {
+      return `${i & 2048 ? "ldmia" : "stmia"} ${R(i >>> 8 & 7)}!, ${rlist(i & 255, 8)}`;
+    }
+    const cond = i >>> 8 & 15;
+    if (cond === 15) return `swi ${hx(i & 255)}`;
+    if (cond === 14) return ".hword " + hx(i);
+    let off = i & 255;
+    if (off & 128) off |= 4294967040;
+    return `b${CC[cond]} ${hx(pc + 4 + (off << 1) >>> 0)}`;
+  }
+  const sub = i >>> 11 & 31;
+  if (sub === 28) {
+    let off = i & 2047;
+    if (off & 1024) off |= 4294965248;
+    return `b ${hx(pc + 4 + (off << 1) >>> 0)}`;
+  }
+  if (sub === 30) {
+    let hi = (i & 2047) << 12;
+    if (hi & 4194304) hi |= 4286578688;
+    return `bl.hi  ; lr = pc+4${hi >= 0 ? "+" : ""}${hx(hi)}`;
+  }
+  if (sub === 31) return `bl.lo  ; pc = lr + #${(i & 2047) << 1}`;
+  return ".hword " + hx(i);
+}
+function armMnemonic(i) {
+  i >>>= 0;
+  if ((i >>> 28 & 15) === 15) return "???";
+  if ((i & 268435440) === 19922704) return "bx";
+  if ((i & 234881024) === 167772160) return i & 16777216 ? "bl" : "b";
+  if ((i & 251658240) === 251658240) return "swi";
+  if ((i & 264241392) === 144) return i & 2097152 ? "mla" : "mul";
+  if ((i & 260047088) === 8388752) return "mull";
+  if ((i & 263196656) === 16777360) return "swp";
+  if ((i & 234881168) === 144 && (i & 96) !== 0) {
+    const ld = !!(i & 1048576), sh = i >>> 5 & 3;
+    return ld ? sh === 1 ? "ldrh" : sh === 2 ? "ldrsb" : "ldrsh" : "strh";
+  }
+  if ((i & 201326592) === 0) {
+    const op = i >>> 21 & 15, S = !!(i & 1048576);
+    if (!S && op >= 8 && op <= 11) return op === 8 || op === 10 ? "mrs" : "msr";
+    return DP[op];
+  }
+  if ((i & 201326592) === 67108864) return (i & 1048576 ? "ldr" : "str") + (i & 4194304 ? "b" : "");
+  if ((i & 234881024) === 134217728) return i & 1048576 ? "ldm" : "stm";
+  return "???";
+}
+function thumbMnemonic(i) {
+  i &= 65535;
+  const top = i >>> 13;
+  if (top === 0) {
+    const op = i >>> 11 & 3;
+    if (op === 3) return i & 512 ? "sub" : "add";
+    return SH[op];
+  }
+  if (top === 1) return ["mov", "cmp", "add", "sub"][i >>> 11 & 3];
+  if (top === 2) {
+    if ((i & 64512) === 16384) return T_ALU[i >>> 6 & 15];
+    if ((i & 64512) === 17408) {
+      const op = i >>> 8 & 3;
+      return op === 3 ? "bx" : ["add", "cmp", "mov"][op];
+    }
+    if ((i & 63488) === 18432) return "ldr";
+    if ((i & 512) === 0) return (i & 2048 ? "ldr" : "str") + (i & 1024 ? "b" : "");
+    return [i & 2048 ? "ldrh" : "strh", i & 2048 ? "ldrsh" : "ldrsb"][i >>> 10 & 1];
+  }
+  if (top === 3) return (i & 2048 ? "ldr" : "str") + (i & 4096 ? "b" : "");
+  if (top === 4) return i & 2048 ? i & 16384 ? "ldr" : "ldrh" : i & 16384 ? "str" : "strh";
+  if (top === 5) {
+    if ((i & 61440) === 40960) return "add";
+    if ((i & 65280) === 45056) return i & 128 ? "sub" : "add";
+    if ((i & 62976) === 46080) return i & 2048 ? "pop" : "push";
+    return "???";
+  }
+  if (top === 6) {
+    if ((i & 61440) === 49152) return i & 2048 ? "ldm" : "stm";
+    return (i >>> 8 & 15) === 15 ? "swi" : "b<c>";
+  }
+  return (i >>> 11 & 31) === 28 ? "b" : "bl";
+}
+
+// src/browser/debug.ts
+var MODES = {
+  16: "usr",
+  17: "fiq",
+  18: "irq",
+  19: "svc",
+  23: "abt",
+  27: "und",
+  31: "sys"
+};
+var IRQ_NAMES = ["VBlank", "HBlank", "VCount", "Tm0", "Tm1", "Tm2", "Tm3", "Serial", "DMA0", "DMA1", "DMA2", "DMA3", "Key", "Cart"];
+function hx2(n, pad = 8) {
+  return (n >>> 0).toString(16).padStart(pad, "0");
+}
+function esc(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+var CSS = `
+#dbg-drawer{position:fixed;top:0;right:0;height:100vh;width:480px;max-width:96vw;z-index:60;
+  background:linear-gradient(180deg,#13131d,#0e0e16);border-left:1px solid #2a2a40;
+  box-shadow:-24px 0 60px rgba(0,0,0,.55);transform:translateX(102%);transition:transform .22s ease;
+  display:flex;flex-direction:column;font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  font-size:11.5px;color:#d6d6e4}
+#dbg-drawer.open{transform:translateX(0)}
+#dbg-drawer .dbg-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #23233a}
+#dbg-drawer .dbg-head b{color:#12e0ff;font-size:13px;letter-spacing:.04em}
+#dbg-drawer .dbg-head .x{margin-left:auto;cursor:pointer;color:#8b8ba3;border:1px solid #2a2a40;border-radius:6px;padding:2px 9px}
+#dbg-drawer .dbg-head .x:hover{color:#fff;border-color:#12e0ff}
+#dbg-tabs{display:flex;gap:4px;padding:8px 12px;border-bottom:1px solid #23233a}
+#dbg-tabs button{background:#191926;border:1px solid #2a2a40;color:#9a9ab5;border-radius:8px;padding:5px 12px;cursor:pointer;font:inherit}
+#dbg-tabs button.on{color:#04222a;background:#12e0ff;border-color:#12e0ff;font-weight:700}
+#dbg-body{flex:1;overflow-y:auto;padding:12px 14px 24px}
+#dbg-body h4{margin:14px 0 6px;color:#7d8aff;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+#dbg-body h4:first-child{margin-top:0}
+.dbg-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:3px 10px}
+.dbg-grid .r{display:flex;justify-content:space-between;background:#171724;border:1px solid #23233a;border-radius:6px;padding:3px 7px}
+.dbg-grid .r b{color:#8b8ba3;font-weight:600}.dbg-grid .r span{color:#e7e7f0}
+.dbg-grid .r.pc span{color:#ffd700}.dbg-grid .r.sp span{color:#12e0ff}.dbg-grid .r.lr span{color:#e53d8f}
+.dbg-flags{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.dbg-flags .f{border:1px solid #2a2a40;border-radius:6px;padding:2px 9px;color:#5a5a72;background:#15151f}
+.dbg-flags .f.on{color:#19ef83;border-color:#19ef8366;background:#19ef8311}
+.dbg-dis{margin-top:6px;background:#0d0d15;border:1px solid #23233a;border-radius:8px;padding:6px 0;overflow-x:auto}
+.dbg-dis .ln{display:flex;gap:12px;padding:1px 10px;white-space:pre}
+.dbg-dis .ln.cur{background:#12e0ff1c;border-left:3px solid #12e0ff;padding-left:7px}
+.dbg-dis .a{color:#5f6b8f}.dbg-dis .w{color:#46506e}.dbg-dis .m{color:#e7e7f0}
+.dbg-dis .ln.cur .m{color:#12e0ff;font-weight:700}
+.dbg-stat{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px}
+.dbg-stat .r{display:flex;justify-content:space-between;background:#171724;border:1px solid #23233a;border-radius:6px;padding:3px 8px}
+.dbg-stat .r b{color:#8b8ba3;font-weight:600}
+.dbg-bar{height:14px;border-radius:7px;background:#2b1230;overflow:hidden;border:1px solid #23233a;margin-top:6px;position:relative}
+.dbg-bar i{display:block;height:100%;background:linear-gradient(90deg,#19ef83,#12e0ff)}
+.dbg-bar span{position:absolute;inset:0;display:grid;place-items:center;font-size:10px;color:#04222a;font-weight:700;mix-blend-mode:plus-lighter;color:#fff}
+canvas.dbg-spark{width:100%;height:42px;background:#0d0d15;border:1px solid #23233a;border-radius:8px;margin-top:6px}
+table.dbg-t{width:100%;border-collapse:collapse;margin-top:4px}
+table.dbg-t th{color:#7d8aff;text-align:left;font-weight:600;padding:2px 6px;border-bottom:1px solid #23233a;font-size:10.5px}
+table.dbg-t td{padding:2px 6px;border-bottom:1px solid #1b1b2b;color:#cdd0e0}
+table.dbg-t td.num{text-align:right;font-variant-numeric:tabular-nums}
+.dbg-hist .row{display:flex;align-items:center;gap:8px;margin:2px 0}
+.dbg-hist .lbl{width:54px;color:#cdd0e0}
+.dbg-hist .bar{flex:1;height:10px;background:#171724;border-radius:5px;overflow:hidden}
+.dbg-hist .bar i{display:block;height:100%;background:linear-gradient(90deg,#7d3de5,#e53d8f)}
+.dbg-hist .pct{width:46px;text-align:right;color:#8b8ba3}
+canvas#dbg-oam{width:100%;image-rendering:pixelated;background:
+  repeating-conic-gradient(#15151f 0 25%,#1b1b2b 0 50%) 0 0/16px 16px;border:1px solid #23233a;border-radius:8px}
+canvas#dbg-pal{width:100%;image-rendering:pixelated;border:1px solid #23233a;border-radius:8px}
+.dbg-note{color:#5a5a72;margin-top:4px;font-size:10.5px}
+#dbg-fab{position:fixed;right:16px;bottom:16px;z-index:59;background:#14141f;color:#12e0ff;border:1px solid #2a2a40;
+  border-radius:999px;padding:10px 16px;cursor:pointer;font:700 13px ui-monospace,Menlo,monospace;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+#dbg-fab:hover{border-color:#12e0ff}
+`;
+var DebugPanel = class {
+  fe;
+  m = null;
+  drawer;
+  body;
+  tab = "cpu";
+  tick = 0;
+  // per-frame instruction deltas (ring buffer of native-coverage fractions for the sparkline)
+  ring = new Float32Array(160);
+  ringN = 0;
+  lastTotal = 0;
+  lastNative = 0;
+  frameTotal = 0;
+  frameNative = 0;
+  histCache = null;
+  constructor(fe) {
+    this.fe = fe;
+    fe.onFrame = (m) => this.frameTick(m);
+    this.build();
+    setInterval(() => this.refresh(), 125);
+  }
+  /** Called by the frontend after every emulated frame. O(1) — just delta bookkeeping. */
+  frameTick(m) {
+    this.m = m;
+    const rec = m.recompiler;
+    const t = m.instrCount || 0;
+    const n = rec ? rec.nativeInstrs : 0;
+    let dt = t - this.lastTotal, dn = n - this.lastNative;
+    if (dt < 0 || dn < 0) {
+      dt = 0;
+      dn = 0;
+    }
+    this.lastTotal = t;
+    this.lastNative = n;
+    this.frameTotal = dt;
+    this.frameNative = dn;
+    this.ring[this.ringN % this.ring.length] = dt > 0 ? dn / dt : 1;
+    this.ringN++;
+  }
+  // ---------------------------------------------------------------- DOM ----
+  build() {
+    const style = document.createElement("style");
+    style.textContent = CSS;
+    document.head.appendChild(style);
+    this.drawer = document.createElement("div");
+    this.drawer.id = "dbg-drawer";
+    this.drawer.innerHTML = `
+      <div class="dbg-head"><b>\u26CF DEBUGGER</b>
+        <span style="color:#5a5a72">live \xB7 read-only</span>
+        <span class="x" id="dbg-close">\u2715</span></div>
+      <div id="dbg-tabs">
+        <button data-t="cpu" class="on">CPU</button>
+        <button data-t="jit">JIT</button>
+        <button data-t="spr">Sprites</button>
+        <button data-t="io">IO</button>
+      </div>
+      <div id="dbg-body"></div>`;
+    document.body.appendChild(this.drawer);
+    this.body = this.drawer.querySelector("#dbg-body");
+    this.drawer.querySelector("#dbg-close").addEventListener("click", () => this.toggle(false));
+    this.drawer.querySelectorAll("#dbg-tabs button").forEach((b) => {
+      b.addEventListener("click", () => {
+        this.tab = b.dataset.t;
+        this.drawer.querySelectorAll("#dbg-tabs button").forEach((x) => x.classList.toggle("on", x === b));
+        this.histCache = null;
+        this.body.innerHTML = "";
+        this.refresh(true);
+      });
+    });
+    const hook = document.getElementById("btn-debug");
+    if (hook) hook.addEventListener("click", () => this.toggle());
+    else {
+      const fab = document.createElement("button");
+      fab.id = "dbg-fab";
+      fab.textContent = "\u26CF debug";
+      fab.addEventListener("click", () => this.toggle());
+      document.body.appendChild(fab);
+    }
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "F9") {
+        e.preventDefault();
+        this.toggle();
+      }
+    });
+  }
+  toggle(force) {
+    const open = force !== void 0 ? force : !this.drawer.classList.contains("open");
+    this.drawer.classList.toggle("open", open);
+    if (open) this.refresh(true);
+  }
+  // ------------------------------------------------------------- refresh ----
+  refresh(force = false) {
+    if (!this.drawer.classList.contains("open")) return;
+    if (!this.m) {
+      this.body.innerHTML = '<div class="dbg-note">Load a ROM to inspect it.</div>';
+      return;
+    }
+    this.tick++;
+    if (this.tab === "cpu") this.renderCpu();
+    else if (this.tab === "jit") this.renderJit(force);
+    else if (this.tab === "spr") this.renderSprites();
+    else this.renderIo();
+  }
+  /** Safe instruction read for disassembly — only from regions that have no read side effects. */
+  safeRead(addr, thumb) {
+    const region = addr >>> 24 & 255;
+    if (!(region <= 3 || region >= 5 && region <= 13)) return null;
+    try {
+      return thumb ? this.m.mem.read16(addr >>> 0) & 65535 : this.m.mem.read32(addr >>> 0) >>> 0;
+    } catch {
+      return null;
+    }
+  }
+  // ----------------------------------------------------------------- CPU ----
+  renderCpu() {
+    const st = this.m.cpu.st;
+    const cpsr = st.cpsr >>> 0;
+    const thumb = !!(cpsr & 32);
+    const pc = st.r[15] >>> 0;
+    let regs = "";
+    for (let i = 0; i < 16; i++) {
+      const cls = i === 15 ? " pc" : i === 13 ? " sp" : i === 14 ? " lr" : "";
+      regs += `<div class="r${cls}"><b>${i === 13 ? "sp" : i === 14 ? "lr" : i === 15 ? "pc" : "r" + i}</b><span>${hx2(st.r[i])}</span></div>`;
+    }
+    const flags = [
+      ["N", cpsr & 2147483648],
+      ["Z", cpsr & 1073741824],
+      ["C", cpsr & 536870912],
+      ["V", cpsr & 268435456],
+      ["I\xB7off", cpsr & 128],
+      ["F\xB7off", cpsr & 64],
+      ["THUMB", cpsr & 32]
+    ].map(([n, v]) => `<span class="f${v ? " on" : ""}">${n}</span>`).join("");
+    const step = thumb ? 2 : 4;
+    const start = pc - 9 * step >>> 0;
+    let dis = "";
+    for (let k = 0; k < 22; k++) {
+      const a = start + k * step >>> 0;
+      const w = this.safeRead(a, thumb);
+      const cur = a === pc ? " cur" : "";
+      if (w === null) {
+        dis += `<div class="ln${cur}"><span class="a">${hx2(a)}</span><span class="w">\xB7</span><span class="m">??</span></div>`;
+        continue;
+      }
+      const txt = thumb ? disasmThumb(w, a) : disasmArm(w, a);
+      dis += `<div class="ln${cur}"><span class="a">${hx2(a)}</span><span class="w">${hx2(w, thumb ? 4 : 8)}</span><span class="m">${esc(txt)}</span></div>`;
+    }
+    this.body.innerHTML = `
+      <h4>Registers</h4><div class="dbg-grid">${regs}</div>
+      <h4>CPSR ${hx2(cpsr)} \xB7 mode ${MODES[cpsr & 31] || hx2(cpsr & 31, 2)} \xB7 ${this.m.cpu.halted ? '<span style="color:#ffd700">HALTED</span>' : "running"}</h4>
+      <div class="dbg-flags">${flags}</div>
+      <h4>Disassembly \xB7 ${thumb ? "THUMB" : "ARM"} @ ${hx2(pc)}</h4>
+      <div class="dbg-dis">${dis}</div>
+      <div class="dbg-note">instr #${(this.m.instrCount || 0).toLocaleString()} \xB7 pause (Space) to freeze a frame, F9 toggles this panel</div>`;
+  }
+  // ----------------------------------------------------------------- JIT ----
+  renderJit(force) {
+    const rec = this.m.recompiler;
+    if (!rec) {
+      this.body.innerHTML = '<div class="dbg-note">Recompiler disabled.</div>';
+      return;
+    }
+    const total = this.m.instrCount || 0;
+    const native = rec.nativeInstrs || 0;
+    const interp = Math.max(0, total - native);
+    const pct = total > 0 ? native / total * 100 : 0;
+    const fPct = this.frameTotal > 0 ? this.frameNative / this.frameTotal * 100 : 100;
+    let armB = 0, armN = 0, thmB = 0, thmN = 0;
+    for (const v of rec.cache.values()) v ? armB++ : armN++;
+    for (const v of rec.cacheThumb.values()) v ? thmB++ : thmN++;
+    let bails = "";
+    if (rec.bailReasons) {
+      const rows = [...rec.bailReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+      bails = rows.map(([k, v]) => `<div class="r"><b>${esc(k)}</b><span>${v}</span></div>`).join("");
+    }
+    if (force || !this.histCache || this.tick % 8 === 0) this.computeHist(rec);
+    const hot = this.hotBlocks(rec, 10).map((h) => `<tr><td>${hx2(h.pc)}</td><td>${h.thumb ? "T" : "A"}</td><td class="num">${h.count}</td><td class="num">${h.execs.toLocaleString()}</td><td class="num">${(h.execs * h.count).toLocaleString()}</td></tr>`).join("");
+    let hist = "";
+    if (this.histCache && this.histCache.total > 0) {
+      const max = this.histCache.rows[0]?.[1] || 1;
+      hist = this.histCache.rows.map(([mn, w]) => `<div class="row"><span class="lbl">${esc(mn)}</span><span class="bar"><i style="width:${w / max * 100}%"></i></span><span class="pct">${(w / this.histCache.total * 100).toFixed(1)}%</span></div>`).join("");
+    }
+    this.body.innerHTML = `
+      <h4>Native WASM vs interpreter \xB7 cumulative</h4>
+      <div class="dbg-stat">
+        <div class="r"><b>total instrs</b><span>${total.toLocaleString()}</span></div>
+        <div class="r"><b>native (WASM)</b><span style="color:#19ef83">${native.toLocaleString()}</span></div>
+        <div class="r"><b>interpreted</b><span style="color:#e53d8f">${interp.toLocaleString()}</span></div>
+        <div class="r"><b>coverage</b><span>${pct.toFixed(2)}%</span></div>
+      </div>
+      <div class="dbg-bar"><i style="width:${pct}%"></i><span>${pct.toFixed(2)}% native</span></div>
+      <h4>This frame</h4>
+      <div class="dbg-stat">
+        <div class="r"><b>instrs/frame</b><span>${this.frameTotal.toLocaleString()}</span></div>
+        <div class="r"><b>native/frame</b><span style="color:#19ef83">${this.frameNative.toLocaleString()}</span></div>
+        <div class="r"><b>interp/frame</b><span style="color:#e53d8f">${(this.frameTotal - this.frameNative).toLocaleString()}</span></div>
+        <div class="r"><b>frame coverage</b><span>${fPct.toFixed(2)}%</span></div>
+      </div>
+      <canvas class="dbg-spark" id="dbg-spark" width="320" height="42"></canvas>
+      <div class="dbg-note">native coverage per frame \xB7 last ${this.ring.length} frames</div>
+      <h4>Block engine</h4>
+      <div class="dbg-stat">
+        <div class="r"><b>blocks compiled</b><span>${rec.blocksCompiled}</span></div>
+        <div class="r"><b>verify rejections</b><span>${rec.blocksRejected}</span></div>
+        <div class="r"><b>ARM cache (blk/nil)</b><span>${armB}/${armN}</span></div>
+        <div class="r"><b>THUMB cache (blk/nil)</b><span>${thmB}/${thmN}</span></div>
+        <div class="r"><b>SMC invalidations</b><span>${rec.smcInvalidations || 0}</span></div>
+        <div class="r"><b>verify gate</b><span>${rec.verifyFirstRun ? "on" : "off"}</span></div>
+      </div>
+      ${bails ? `<h4>Bail reasons (block discovery)</h4><div class="dbg-stat">${bails}</div>` : ""}
+      <h4>Hottest native blocks</h4>
+      <table class="dbg-t"><tr><th>PC</th><th>set</th><th>instrs</th><th>dispatches</th><th>~instrs run</th></tr>${hot}</table>
+      <h4>Opcode mix \xB7 execution-weighted</h4>
+      <div class="dbg-hist">${hist || '<div class="dbg-note">warming up\u2026</div>'}</div>`;
+    const cv = this.body.querySelector("#dbg-spark");
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, cv.width, cv.height);
+    const n = Math.min(this.ringN, this.ring.length);
+    g.beginPath();
+    for (let i = 0; i < n; i++) {
+      const v = this.ring[(this.ringN - n + i) % this.ring.length];
+      const x = i / (this.ring.length - 1) * cv.width;
+      const y = cv.height - 2 - v * (cv.height - 6);
+      i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    }
+    g.strokeStyle = "#19ef83";
+    g.lineWidth = 1.5;
+    g.stroke();
+    g.strokeStyle = "#2a2a40";
+    g.beginPath();
+    g.moveTo(0, cv.height - 2);
+    g.lineTo(cv.width, cv.height - 2);
+    g.stroke();
+  }
+  hotBlocks(rec, n) {
+    const out = [];
+    for (const [pc, v] of rec.cache) if (v && v.execs) out.push({ pc, thumb: false, count: v.count, execs: v.execs });
+    for (const [pc, v] of rec.cacheThumb) if (v && v.execs) out.push({ pc, thumb: true, count: v.count, execs: v.execs });
+    out.sort((a, b) => b.execs * b.count - a.execs * a.count);
+    return out.slice(0, n);
+  }
+  computeHist(rec) {
+    const hot = this.hotBlocks(rec, 48);
+    const map = /* @__PURE__ */ new Map();
+    let total = 0;
+    for (const h of hot) {
+      for (let i = 0; i < h.count; i++) {
+        const a = h.pc + i * (h.thumb ? 2 : 4) >>> 0;
+        const w = this.safeRead(a, h.thumb);
+        if (w === null) continue;
+        const mn = h.thumb ? thumbMnemonic(w) : armMnemonic(w);
+        map.set(mn, (map.get(mn) || 0) + h.execs);
+        total += h.execs;
+      }
+    }
+    const rows = [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 14);
+    this.histCache = { rows, total };
+  }
+  // ------------------------------------------------------------- Sprites ----
+  renderSprites() {
+    const mem = this.m.mem;
+    const io = this.m.io;
+    const dispcnt = io.get16(67108864) & 65535;
+    const map1D = !!(dispcnt & 64);
+    const bitmapMode = (dispcnt & 7) >= 3;
+    if (!this.body.querySelector("#dbg-oam")) {
+      this.body.innerHTML = `
+        <h4>OAM atlas \xB7 128 sprites <span style="color:#5a5a72">(mapping: ${map1D ? "1D" : "2D"}, OBJ ${dispcnt & 4096 ? "on" : "OFF"})</span></h4>
+        <canvas id="dbg-oam" width="320" height="640"></canvas>
+        <div class="dbg-note">each cell = one OAM entry (fit to 32px) \xB7 dimmed = disabled \xB7 ring = affine (drawn untransformed)</div>
+        <h4>Enabled sprites</h4><div id="dbg-oam-table"></div>`;
+    }
+    const cv = this.body.querySelector("#dbg-oam");
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, cv.width, cv.height);
+    const SIZES = [
+      [[8, 8], [16, 16], [32, 32], [64, 64]],
+      [[16, 8], [32, 8], [32, 16], [64, 32]],
+      [[8, 16], [8, 32], [16, 32], [32, 64]]
+    ];
+    const oam = mem.oam, vram = mem.vram, pal = mem.palette;
+    const pal16 = (off) => (pal[512 + off * 2] | pal[512 + off * 2 + 1] << 8) & 32767;
+    const rgb = (c) => [(c & 31) << 3, (c >> 5 & 31) << 3, (c >> 10 & 31) << 3];
+    let rows = "";
+    let shown = 0;
+    for (let s = 0; s < 128; s++) {
+      const a0 = oam[s * 8] | oam[s * 8 + 1] << 8;
+      const a1 = oam[s * 8 + 2] | oam[s * 8 + 3] << 8;
+      const a2 = oam[s * 8 + 4] | oam[s * 8 + 5] << 8;
+      const affine = !!(a0 & 256);
+      const disabled2 = !affine && !!(a0 & 512);
+      const shape = a0 >> 14 & 3;
+      const size = a1 >> 14 & 3;
+      const [w, h] = (SIZES[shape] || SIZES[0])[size];
+      const color256 = !!(a0 & 8192);
+      const tile = a2 & 1023;
+      const palBank = a2 >> 12 & 15;
+      const cellX = s % 8 * 40 + 4, cellY = (s >> 3) * 40 + 4;
+      const scale = Math.max(w, h) / 32;
+      const img = g.createImageData(Math.min(32, Math.ceil(w / scale)), Math.min(32, Math.ceil(h / scale)));
+      const stride = img.width;
+      for (let py = 0; py < img.height; py++) {
+        for (let px = 0; px < stride; px++) {
+          const sx = Math.min(w - 1, Math.floor(px * scale));
+          const sy = Math.min(h - 1, Math.floor(py * scale));
+          const tx = sx >> 3, ty = sy >> 3, fx = sx & 7, fy = sy & 7;
+          let ci = 0;
+          if (color256) {
+            const tn = tile + (map1D ? ty * (w >> 3) * 2 : ty * 32) + tx * 2 & 1023;
+            if (!bitmapMode || tn >= 512) ci = vram[(65536 + tn * 32 + fy * 8 + fx) % vram.length];
+          } else {
+            const tn = tile + (map1D ? ty * (w >> 3) : ty * 32) + tx & 1023;
+            if (!bitmapMode || tn >= 512) {
+              const b2 = vram[(65536 + tn * 32 + fy * 4 + (fx >> 1)) % vram.length];
+              ci = fx & 1 ? b2 >> 4 : b2 & 15;
+              if (ci) ci += palBank * 16;
+            }
+          }
+          const o = (py * stride + px) * 4;
+          if (ci === 0) {
+            img.data[o + 3] = 0;
+            continue;
+          }
+          const [r, gg, b] = rgb(pal16(ci));
+          img.data[o] = r;
+          img.data[o + 1] = gg;
+          img.data[o + 2] = b;
+          img.data[o + 3] = disabled2 ? 70 : 255;
+        }
+      }
+      g.putImageData(img, cellX + (32 - stride >> 1), cellY + (32 - img.height >> 1));
+      if (affine) {
+        g.strokeStyle = "#ffd700";
+        g.strokeRect(cellX - 1.5, cellY - 1.5, 35, 35);
+      }
+      if (!disabled2 && shown < 28) {
+        shown++;
+        let x = a1 & 511;
+        if (x >= 240 && x >= 256) x -= 512;
+        let y = a0 & 255;
+        if (y >= 160) y -= 256;
+        rows += `<tr><td>${s}</td><td class="num">${x},${y}</td><td class="num">${w}\xD7${h}</td><td class="num">${tile}</td><td class="num">${color256 ? "256" : "p" + palBank}</td><td class="num">${a2 >> 10 & 3}</td><td>${affine ? "aff" : ""}${a1 & 4096 && !affine ? " fH" : ""}${a1 & 8192 && !affine ? " fV" : ""}${a0 >> 10 & 3 ? " m" + (a0 >> 10 & 3) : ""}</td></tr>`;
+      }
+    }
+    this.body.querySelector("#dbg-oam-table").innerHTML = `<table class="dbg-t"><tr><th>#</th><th>x,y</th><th>size</th><th>tile</th><th>pal</th><th>pri</th><th>flags</th></tr>${rows}</table>`;
+  }
+  // ------------------------------------------------------------------ IO ----
+  renderIo() {
+    const io = this.m.io;
+    const mem = this.m.mem;
+    const g16 = (a) => io.get16(a) & 65535;
+    const dispcnt = g16(67108864), dispstat = g16(67108868);
+    const ie = g16(67109376), ifr = g16(67109378), ime = g16(67109384);
+    const keys = g16(67109168);
+    const irqList = (mask) => IRQ_NAMES.filter((_, i) => mask & 1 << i).join(" ") || "\u2014";
+    const bgs = [0, 1, 2, 3].map((n) => dispcnt & 256 << n ? `BG${n}` : null).filter(Boolean).join(" ");
+    const keyNames = ["A", "B", "Sel", "St", "\u2192", "\u2190", "\u2191", "\u2193", "R", "L"];
+    const pressed = keyNames.filter((_, i) => !(keys & 1 << i)).join(" ") || "\u2014";
+    let timers = "";
+    for (let t = 0; t < 4; t++) {
+      const cnt = g16(67109120 + t * 4), ctl = g16(67109122 + t * 4);
+      timers += `<div class="r"><b>TM${t}</b><span>${hx2(cnt, 4)} ${ctl & 128 ? "on" : "off"}${ctl & 4 ? " casc" : ""}${ctl & 64 ? " irq" : ""}</span></div>`;
+    }
+    this.body.innerHTML = `
+      <h4>Display</h4>
+      <div class="dbg-stat">
+        <div class="r"><b>DISPCNT</b><span>${hx2(dispcnt, 4)} \xB7 mode ${dispcnt & 7}</span></div>
+        <div class="r"><b>layers</b><span>${bgs}${dispcnt & 4096 ? " OBJ" : ""}</span></div>
+        <div class="r"><b>DISPSTAT</b><span>${hx2(dispstat, 4)}${dispstat & 1 ? " VBL" : ""}${dispstat & 2 ? " HBL" : ""}</span></div>
+        <div class="r"><b>VCOUNT</b><span>${g16(67108870) & 255}</span></div>
+        <div class="r"><b>BLDCNT</b><span>${hx2(g16(67108944), 4)}</span></div>
+        <div class="r"><b>OBJ map</b><span>${dispcnt & 64 ? "1D" : "2D"}</span></div>
+      </div>
+      <h4>Interrupts</h4>
+      <div class="dbg-stat">
+        <div class="r"><b>IME</b><span>${ime & 1 ? "on" : "OFF"}</span></div>
+        <div class="r"><b>BIOS IF</b><span>${hx2(mem.read16(50364408) & 65535, 4)}</span></div>
+        <div class="r" style="grid-column:1/-1"><b>IE</b><span>${irqList(ie)}</span></div>
+        <div class="r" style="grid-column:1/-1"><b>IF</b><span>${irqList(ifr)}</span></div>
+        <div class="r" style="grid-column:1/-1"><b>handler</b><span>${hx2(mem.read32(50364412))}</span></div>
+      </div>
+      <h4>Timers \xB7 DMA</h4>
+      <div class="dbg-stat">${timers}
+        <div class="r"><b>DMA3</b><span>${hx2(g16(67109086), 4)}</span></div>
+        <div class="r"><b>DMA0</b><span>${hx2(g16(67109050), 4)}</span></div>
+      </div>
+      <h4>Input</h4>
+      <div class="dbg-stat"><div class="r" style="grid-column:1/-1"><b>pressed</b><span>${pressed}</span></div></div>
+      <h4>Palette \xB7 BG 0-255 then OBJ 256-511</h4>
+      <canvas id="dbg-pal" width="256" height="128"></canvas>`;
+    const cv = this.body.querySelector("#dbg-pal");
+    const g = cv.getContext("2d");
+    const img = g.createImageData(256, 128);
+    const pal = mem.palette;
+    for (let i = 0; i < 512; i++) {
+      const c = (pal[i * 2] | pal[i * 2 + 1] << 8) & 32767;
+      const r = (c & 31) << 3, gg = (c >> 5 & 31) << 3, b = (c >> 10 & 31) << 3;
+      const cx = i % 32 * 8, cy = (i >> 5) * 8;
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        const o = ((cy + y) * 256 + cx + x) * 4;
+        img.data[o] = r;
+        img.data[o + 1] = gg;
+        img.data[o + 2] = b;
+        img.data[o + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+  }
+};
+
 // src/browser/main.ts
 var SCREEN_W2 = 240;
 var SCREEN_H2 = 160;
@@ -6340,6 +7072,9 @@ var Frontend = class {
   };
   onSaveStatus = () => {
   };
+  /** Called after every emulated frame with the live machine (used by the debugger panel). */
+  onFrame = () => {
+  };
   constructor(canvas) {
     this.canvas = canvas;
     this.canvas.width = SCREEN_W2;
@@ -6429,6 +7164,7 @@ var Frontend = class {
     for (let i = 0; i < budget; i++) {
       this.applyKeys();
       this.machine.runFrame();
+      this.onFrame(this.machine);
       this.audio.push(this.machine.audio.drainSamples(4096));
       this.flushBatterySave(false);
       if ((this.frameCounter & 31) === 0) this.updateSaveStatus();
@@ -6674,6 +7410,7 @@ function boot() {
     fe.speed = parseFloat(speedSel.value);
   });
   window.GBA = fe;
+  window.GBA_DEBUG = new DebugPanel(fe);
 }
 if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
 else boot();
