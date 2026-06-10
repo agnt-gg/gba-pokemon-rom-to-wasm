@@ -40,6 +40,8 @@ This is not source assembly compilation and it is not a ROM distribution project
 - 128K Flash save model and browser localStorage persistence
 - GPIO RTC HLE sufficient for Ruby/Sapphire boot/menu stability
 - Browser frontend at `web/index.html`
+- **Live in-emulator debugger** (F9 or the ⛏ Debug button): all 16 registers + CPSR flags/mode with a live ARM/THUMB disassembly window around PC; JIT telemetry — cumulative and per-frame **native-WASM vs interpreted** instruction counts, coverage sparkline, blocks compiled/rejected, cache fill, SMC invalidations, bail-reason histogram, hottest native blocks by dispatch count, and an execution-weighted opcode mix; a full 128-sprite OAM atlas decoded live from VRAM/OAM/palette; and decoded MMIO (DISPCNT/DISPSTAT/IE/IF/IME/timers/DMA/keys) with the 512-entry palette. Strictly read-only, ~8 Hz refresh, zero cost while closed
+- **Drift-free audio**: emulation paced at the exact GBA frame rate (16.777216 MHz / 280,896 cycles = 59.7275 fps, not a rounded 60), plus dynamic rate control that trims the APU output rate ±2% from audio-queue depth — locking latency at ~93 ms indefinitely instead of drifting out of sync over long play sessions
 - Headless agent harness for deterministic input, RAM/CPU observation, SoftReset postmortems, and HBlank stress tests
 - Regression suite covering CPU, BIOS affine, boot, frames, Flash, IRQ wake, THUMB IRQ LR, PPU window/blend, RTC, and Ruby Flash sectors
 
