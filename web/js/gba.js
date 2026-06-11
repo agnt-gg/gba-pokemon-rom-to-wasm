@@ -4958,6 +4958,7 @@ var GbaPpu = class {
     const bldAlpha = this.io.get16(REG.BLDALPHA);
     const alphaEffect = (bldcnt >> 6 & 3) === 1;
     const objFirstTarget = (bldcnt & 16) !== 0;
+    const secondTargets = bldcnt >> 8 & 63;
     for (let i = 127; i >= 0; i--) {
       const a0 = this.mem.oam16(i * 8);
       const a1 = this.mem.oam16(i * 8 + 2);
@@ -5028,7 +5029,9 @@ var GbaPpu = class {
         }
         if (pr <= priLine[sx]) {
           const c = colors256 ? this.mem.pal16(512 + ci * 2) : this.mem.pal16(512 + (palBank * 16 + ci) * 2);
-          const doBlend = objMode === 1 || alphaEffect && objFirstTarget;
+          const below = this.topLayer[sx];
+          const belowIsSecondTarget = below !== 4 && (secondTargets >> below & 1) !== 0;
+          const doBlend = (objMode === 1 || alphaEffect && objFirstTarget) && belowIsSecondTarget;
           this.subColor[sx] = colorLine[sx];
           this.subLayer[sx] = this.topLayer[sx];
           colorLine[sx] = doBlend ? blend555(c, colorLine[sx], bldAlpha) : c;
@@ -5557,6 +5560,10 @@ var GbaRtc = class {
   // which parameter byte we're on
   outByte = 0;
   // byte currently being shifted out
+  // True until the first falling edge after the command byte: that edge PRESENTS bit 0
+  // (S-3511A drives data on falling edges; the GBA samples while SCK is high). Advancing on
+  // that first fall shifted every byte right by one bit - the Emerald battery-dry root cause.
+  firstFallPending = false;
   outBits = 0;
   // bits already shifted out of outByte
   // S-3511A status register (24h flag in bit6, power-fail in bit7). 0x40 = 24-hour mode.
@@ -5648,6 +5655,7 @@ var GbaRtc = class {
       this.byteIndex = 0;
       this.outByte = this.outBuf.length ? this.outBuf[0] : 0;
       this.outBits = 0;
+      this.firstFallPending = true;
     }
   }
   /**
@@ -5681,6 +5689,10 @@ var GbaRtc = class {
   /** Advance the outgoing data bit after the GBA reads it on a clock low (read direction). */
   onClockFall() {
     if (!this.active || !this.commandDone || !this.reading) return;
+    if (this.firstFallPending) {
+      this.firstFallPending = false;
+      return;
+    }
     if (++this.outBits === 8) {
       this.outBits = 0;
       this.byteIndex++;
@@ -6479,7 +6491,6 @@ var GbaMachine = class {
     this.recompiler = new Recompiler(this.mem);
     for (let d = 0; d < 4; d++) this.recompiler.chainStops.add(316 + d * 4 >>> 0);
     this.recompiler.chainStops.add(136182424);
-    for (const p of [134257318, 134257320, 134257322, 134257324]) this.recompiler.chainStops.add(p);
     this.header = parseHeader(rom);
     this.rtc = new GbaRtc();
     this.mem.rtc = this.rtc;
@@ -6699,12 +6710,6 @@ var GbaMachine = class {
     }
     return null;
   }
-  applyPokemonGen3RuntimeFixes() {
-    if (!this.isPokemonRubySapphire()) return;
-    const st = this.cpu.st;
-    const pc = st.r[15] >>> 0;
-    if (pc === 134257318 || pc === 134257320 || pc === 134257322 || pc === 134257324) st.r[0] = 0;
-  }
   step() {
     if (this.handleIrqReturn()) {
       this.instrCount++;
@@ -6728,7 +6733,6 @@ var GbaMachine = class {
       const n = this.recompiler.tryRunNative(this.cpu);
       if (n > 0) {
         this.cpu.cycles += n;
-        this.applyPokemonGen3RuntimeFixes();
         this.instrCount += n;
         this.ppu.step(n);
         this.timers.step(n);
@@ -6742,7 +6746,6 @@ var GbaMachine = class {
       }
     }
     const c = this.cpu.step();
-    this.applyPokemonGen3RuntimeFixes();
     this.instrCount++;
     this.ppu.step(c);
     this.timers.step(c);

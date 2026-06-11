@@ -72,10 +72,8 @@ export class GbaMachine {
     // so machine.step() sees them exactly like on the single-dispatch path:
     //   - depth-unique BIOS IRQ-return sentinels (BIOS_IRQ_RETURN + d*4)
     //   - Pokemon Gen3 flash-helper HLE entry (ProgramFlashSectorAndVerify)
-    //   - Ruby/Sapphire RTC battery-check quirk return PCs
     for (let d = 0; d < 4; d++) this.recompiler.chainStops.add((0x0000013c + d * 4) >>> 0);
     this.recompiler.chainStops.add(0x081dfa98);
-    for (const p of [0x08009aa6, 0x08009aa8, 0x08009aaa, 0x08009aac]) this.recompiler.chainStops.add(p);
     this.header = parseHeader(rom);
 
     // Ruby/Sapphire/Emerald bit-bang a cartridge GPIO real-time clock at 0x080000C4-C9.
@@ -330,18 +328,6 @@ export class GbaMachine {
     return null;
   }
 
-  private applyPokemonGen3RuntimeFixes(): void {
-    if (!this.isPokemonRubySapphire()) return;
-    const st = this.cpu.st;
-    // Pokemon Ruby/Sapphire main-menu Task_MainMenuCheckRtc calls RtcGetErrorStatus at 0x08009AA2,
-    // returns at 0x08009AA6, masks r0 with 0x0FF0, and branches to the battery-warning task if
-    // nonzero. Our HLE RTC is battery-good (status 0x40, valid BCD date/time), but Ruby's static
-    // RTC error flags can be left stale by the bit-banged SiiRTC glue. Clear only this exact false
-    // menu-check return value so the game does not show the internal-battery warning.
-    const pc = st.r[15] >>> 0;
-    if (pc === 0x08009aa6 || pc === 0x08009aa8 || pc === 0x08009aaa || pc === 0x08009aac) st.r[0] = 0;
-  }
-
   step(): number {
     if (this.handleIrqReturn()) { this.instrCount++; return 1; }
     const hleCycles = this.hlePokemonGen3FlashHelpers();
@@ -365,7 +351,6 @@ export class GbaMachine {
       const n = this.recompiler.tryRunNative(this.cpu);
       if (n > 0) {
         this.cpu.cycles += n;
-        this.applyPokemonGen3RuntimeFixes();
         this.instrCount += n;
         this.ppu.step(n);
         this.timers.step(n);
@@ -376,7 +361,6 @@ export class GbaMachine {
     }
 
     const c = this.cpu.step();
-    this.applyPokemonGen3RuntimeFixes();
     this.instrCount++;
     this.ppu.step(c);
     this.timers.step(c);

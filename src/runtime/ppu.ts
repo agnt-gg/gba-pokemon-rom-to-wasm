@@ -414,6 +414,8 @@ export class GbaPpu {
     const bldAlpha = this.io.get16(REG.BLDALPHA);
     const alphaEffect = ((bldcnt >> 6) & 3) === 1;
     const objFirstTarget = (bldcnt & 0x10) !== 0;
+    // BLDCNT bits 8-13: which layers may serve as the SECOND (bottom) blend target.
+    const secondTargets = (bldcnt >> 8) & 0x3f;
     // Iterate sprites 127..0 so sprite 0 wins on ties.
     for (let i = 127; i >= 0; i--) {
       const a0 = this.mem.oam16(i * 8);
@@ -487,7 +489,11 @@ export class GbaPpu {
         if (isObjWindow) { this.objWinMask[sx] = 1; continue; }
         if (pr <= priLine[sx]) {
           const c = colors256 ? this.mem.pal16(0x200 + ci * 2) : this.mem.pal16(0x200 + (palBank * 16 + ci) * 2);
-          const doBlend = objMode === 1 || (alphaEffect && objFirstTarget);
+          // Blend only over second-target pixels; OBJ-over-OBJ never blends (layer is
+          // flattened before color math). Otherwise mode-1 sprites draw fully opaque.
+          const below = this.topLayer[sx];
+          const belowIsSecondTarget = below !== 4 && ((secondTargets >> below) & 1) !== 0;
+          const doBlend = (objMode === 1 || (alphaEffect && objFirstTarget)) && belowIsSecondTarget;
           this.subColor[sx] = colorLine[sx]; this.subLayer[sx] = this.topLayer[sx];
           colorLine[sx] = doBlend ? blend555(c, colorLine[sx], bldAlpha) : c;
           priLine[sx] = pr; drawn[sx] = 1; this.topLayer[sx] = 4; this.objSemiTrans[sx] = objMode === 1 ? 1 : 0;

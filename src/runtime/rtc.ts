@@ -52,6 +52,10 @@ export class GbaRtc {
   private reading = false;    // true once command says "read"
   private byteIndex = 0;      // which parameter byte we're on
   private outByte = 0;        // byte currently being shifted out
+  // True until the first falling edge after the command byte: that edge PRESENTS bit 0
+  // (S-3511A drives data on falling edges; the GBA samples while SCK is high). Advancing on
+  // that first fall shifted every byte right by one bit - the Emerald battery-dry root cause.
+  private firstFallPending = false;
   private outBits = 0;        // bits already shifted out of outByte
 
   // S-3511A status register (24h flag in bit6, power-fail in bit7). 0x40 = 24-hour mode.
@@ -156,6 +160,7 @@ export class GbaRtc {
       this.byteIndex = 0;
       this.outByte = this.outBuf.length ? this.outBuf[0] : 0;
       this.outBits = 0;
+      this.firstFallPending = true;
     }
   }
 
@@ -193,6 +198,7 @@ export class GbaRtc {
   /** Advance the outgoing data bit after the GBA reads it on a clock low (read direction). */
   private onClockFall(): void {
     if (!this.active || !this.commandDone || !this.reading) return;
+    if (this.firstFallPending) { this.firstFallPending = false; return; } // first fall presents bit 0
     if (++this.outBits === 8) {
       this.outBits = 0;
       this.byteIndex++;
