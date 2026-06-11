@@ -85,14 +85,10 @@ The link-port model is built around a `LinkTransport` seam; the in-process `Loca
 
 The debugging doctrine that all four fixes followed: **locate (histogram) -> observe (IO trace) -> understand (pret source) -> prove (differential instrument) -> lock (regression test)**. Sections 16-17 of the technical writeup tell the full story.
 
-## Technical writeup
+## Documentation
 
-See:
-
-- [`docs/rom-to-wasm-process.html`](docs/rom-to-wasm-process.html)
-
-This document covers the full ROM-to-browser process, hardware runtime, BIOS HLE, autonomous instrumentation, and failure archaeology.
-
+- [`docs.md`](docs.md) — usage & developer guide: quick start, controls, saves, running the tests, measuring coverage, the diagnostic toolkit, programmatic use, project structure.
+- [`TECHNICAL_WRITEUP.md`](TECHNICAL_WRITEUP.md) — the full engineering field note: cartridge parsing, ARM7TDMI contract, BIOS HLE, PPU/DMA/IRQ, Flash/RTC, the ARM→WASM recompiler, self-modifying-code guards, differential verification, the optimization campaign, and the Gen 3 five-game debugging war stories (sections 16–17).
 ## Running locally
 
 ```bash

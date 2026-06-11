@@ -70,3 +70,6 @@ tools/_skill_*
 tools/_fix_*
 tools/_tree_diff.cjs
 
+tools/_html_to_md.cjs
+tools/_ui_inventory.cjs
+
