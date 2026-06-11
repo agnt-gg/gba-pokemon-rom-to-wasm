@@ -23,6 +23,7 @@ import { GbaInterrupts } from './interrupts.ts';
 import { GbaFlash } from './flash.ts';
 import { GbaRtc } from './rtc.ts';
 import { GbaAudio } from './audio.ts';
+import { GbaSio } from './sio.ts';
 import { Mode, FLAG_I, FLAG_T } from '../cpu/arm_state.ts';
 
 const CYCLES_PER_FRAME = 1232 * 228; // 280896
@@ -45,6 +46,7 @@ export class GbaMachine {
   flash: GbaFlash;
   rtc: GbaRtc;
   audio: GbaAudio;
+  sio: GbaSio;
   header: GbaHeader;
   instrCount = 0;
   frameCount = 0;
@@ -86,6 +88,9 @@ export class GbaMachine {
     this.timers = new GbaTimers(this.io);
     this.audio = new GbaAudio(this.io);
     this.irq = new GbaInterrupts(this.io, this.cpu);
+    // Serial I/O (link port). Disconnected by default; LocalLinkHub / a WebRTC transport links it.
+    this.sio = new GbaSio(this.io);
+    this.sio.requestIrq = (b) => this.irq.request(b);
     // Nested-IRQ correctness gate. Real hardware enters IRQ mode with I set; nesting only resumes
     // after the handler explicitly clears I. Our HLE BIOS dispatch redirects 0x18 to the user handler
     // WITHIN a single step(), so the only unsafe window is: (a) the CPU is parked at the unredirected
@@ -138,12 +143,23 @@ export class GbaMachine {
         case REG.TM2CNT_H: this.timers.onControlWrite(2); break;
         case REG.TM3CNT_H: this.timers.onControlWrite(3); break;
         case 0x082: this.audio.onSoundCntHWrite(); break;
+        case 0x128: this.sio.onSiocntWrite(); break;
+        case 0x134: this.sio.onRcntWrite(); break;
       }
+      // PSG register block (square/wave/noise) + banked wave RAM.
+      if (off >= 0x060 && off <= 0x07f) this.audio.onPsgWrite(off, _val);
+      else if (off >= 0x090 && off <= 0x09f) this.audio.onWaveRamWrite(off, _val);
     };
 
     // HALTCNT: halt the CPU until the next interrupt.
     this.io.haltHook = () => { this.cpu.halted = true; };
 
+    // Real-hardware boot state: the BIOS leaves DISPCNT forced-blank (bit7) set. Emerald/FRLG's
+    // gpu_regs.c manager relies on this: SetGpuReg() only writes hardware DIRECTLY while in
+    // VBlank or forced blank, otherwise it defers to the VBlank IRQ handler - which cannot fire
+    // until the deferred DISPSTAT write lands. Without forced blank at boot, Emerald/FRLG
+    // deadlock in WaitForVBlank() (the white-screen spin diagnosed at 0x80008ac).
+    this.io.set16(REG.DISPCNT, 0x0080); // forced blank
     this.io.set16(REG.KEYINPUT, this.keyState);
     this.cpu.swiHandler = makeBiosHle({
       onIntrWait: () => { this.cpu.halted = true; },
@@ -333,7 +349,7 @@ export class GbaMachine {
       this.instrCount++;
       this.ppu.step(hleCycles);
       this.timers.step(hleCycles);
-      this.audio.step(hleCycles);
+      this.audio.step(hleCycles); this.sio.step(hleCycles);
       if (!this.cpu.halted) { this.irq.poll(); this.serviceIrqDispatch(); }
       return hleCycles;
     }
@@ -353,7 +369,7 @@ export class GbaMachine {
         this.instrCount += n;
         this.ppu.step(n);
         this.timers.step(n);
-        this.audio.step(n);
+        this.audio.step(n); this.sio.step(n);
         if (!this.cpu.halted) { this.irq.poll(); this.serviceIrqDispatch(); }
         return n;
       }
@@ -364,7 +380,7 @@ export class GbaMachine {
     this.instrCount++;
     this.ppu.step(c);
     this.timers.step(c);
-    this.audio.step(c);
+    this.audio.step(c); this.sio.step(c);
     // Check for pending IRQ, then BIOS dispatch.
     if (!this.cpu.halted) {
       this.irq.poll();
@@ -404,7 +420,7 @@ export class GbaMachine {
         // game's handler. Once unhalted, the normal step() path below executes the handler, which
         // sets the BIOS interrupt-check flag and acks IF so the pending IntrWait SWI can complete.
         const c = 8;
-        this.ppu.step(c); this.timers.step(c); this.audio.step(c);
+        this.ppu.step(c); this.timers.step(c); this.audio.step(c); this.sio.step(c);
         this.irq.poll();
         if (!this.cpu.halted) this.serviceIrqDispatch();
         cyclesThisFrame += c;

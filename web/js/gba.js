@@ -1,4 +1,4 @@
-// src/cpu/arm_state.ts
+// gba-pokemon-rom-to-wasm/src/cpu/arm_state.ts
 var Mode = {
   USR: 16,
   FIQ: 17,
@@ -217,7 +217,7 @@ var ArmState = class {
   }
 };
 
-// src/cpu/barrel.ts
+// gba-pokemon-rom-to-wasm/src/cpu/barrel.ts
 var ShiftType = { LSL: 0, LSR: 1, ASR: 2, ROR: 3 };
 function shiftImm(type, value, amount, carryIn) {
   value = value | 0;
@@ -272,7 +272,7 @@ function shiftReg(type, value, amount, carryIn) {
   }
 }
 
-// src/cpu/thumb_core.ts
+// gba-pokemon-rom-to-wasm/src/cpu/thumb_core.ts
 function thumbStep(cpu) {
   const st = cpu.st;
   const pc = st.r[15] >>> 0;
@@ -812,7 +812,7 @@ function ldrWord(cpu, addr) {
   return rot === 0 ? aligned : (aligned >>> rot | aligned << 32 - rot) >>> 0;
 }
 
-// src/cpu/arm_core.ts
+// gba-pokemon-rom-to-wasm/src/cpu/arm_core.ts
 var ArmCore = class {
   st = new ArmState();
   bus;
@@ -1438,7 +1438,7 @@ var ArmCore = class {
   }
 };
 
-// src/recompiler/wasm_encoder.ts
+// gba-pokemon-rom-to-wasm/src/recompiler/wasm_encoder.ts
 var I32 = 127;
 var I64 = 126;
 var VOID = 64;
@@ -1736,7 +1736,7 @@ var CodeBuilder = class {
   }
 };
 
-// src/recompiler/abi.ts
+// gba-pokemon-rom-to-wasm/src/recompiler/abi.ts
 var REG_BASE = 0;
 var OFF_CPSR = 64;
 var OFF_CYCLES = 68;
@@ -1757,7 +1757,7 @@ var HOST = {
 };
 var HOST_IMPORT_ORDER = ["read8", "read16", "read32", "write8", "write16", "write32"];
 
-// src/recompiler/arm_lifter.ts
+// gba-pokemon-rom-to-wasm/src/recompiler/arm_lifter.ts
 var L_A = 0;
 var L_B = 1;
 var L_RES = 2;
@@ -2515,7 +2515,7 @@ function liftBlockXfer(cb, instr, pcPlus12) {
   return L ? { status: "ok", mayLoad: true } : { status: "ok", mayStore: true };
 }
 
-// src/recompiler/thumb_lifter.ts
+// gba-pokemon-rom-to-wasm/src/recompiler/thumb_lifter.ts
 var L_A2 = 0;
 var L_B2 = 1;
 var L_RES2 = 2;
@@ -3337,7 +3337,7 @@ function emitCond(cb, cond) {
   }
 }
 
-// src/recompiler/recompiler.ts
+// gba-pokemon-rom-to-wasm/src/recompiler/recompiler.ts
 var tHostRead = { params: [I32], results: [I32] };
 var tHostWrite = { params: [I32, I32], results: [] };
 var tBlock = { params: [], results: [I32] };
@@ -3842,7 +3842,7 @@ var Recompiler = class {
   }
 };
 
-// src/runtime/memory.ts
+// gba-pokemon-rom-to-wasm/src/runtime/memory.ts
 var GbaMemory = class {
   bios = new Uint8Array(16384);
   ewram = new Uint8Array(262144);
@@ -4035,7 +4035,7 @@ var GbaMemory = class {
   }
 };
 
-// src/runtime/io.ts
+// gba-pokemon-rom-to-wasm/src/runtime/io.ts
 var REG = {
   DISPCNT: 0,
   DISPSTAT: 4,
@@ -4195,7 +4195,7 @@ var GbaIo = class {
   }
 };
 
-// src/runtime/bios_hle.ts
+// gba-pokemon-rom-to-wasm/src/runtime/bios_hle.ts
 function s16(v) {
   v &= 65535;
   return v & 32768 ? v - 65536 : v;
@@ -4543,7 +4543,7 @@ function bitUnpack(cpu, src, dst, info) {
   if (outBits > 0) bus.write32(dst, outBuf >>> 0);
 }
 
-// src/runtime/header.ts
+// gba-pokemon-rom-to-wasm/src/runtime/header.ts
 function parseHeader(rom) {
   const ascii = (a, b) => {
     let s = "";
@@ -4568,7 +4568,7 @@ function parseHeader(rom) {
   };
 }
 
-// src/runtime/ppu.ts
+// gba-pokemon-rom-to-wasm/src/runtime/ppu.ts
 var SCREEN_W = 240;
 var SCREEN_H = 160;
 var CYCLES_PER_SCANLINE = 1232;
@@ -5093,7 +5093,7 @@ function spriteSize(shape, size) {
   return (table[shape] || table[0])[size];
 }
 
-// src/runtime/dma.ts
+// gba-pokemon-rom-to-wasm/src/runtime/dma.ts
 var IRQ_DMA = [1 << 8, 1 << 9, 1 << 10, 1 << 11];
 var GbaDma = class {
   mem;
@@ -5194,7 +5194,7 @@ var GbaDma = class {
   }
 };
 
-// src/runtime/timers.ts
+// gba-pokemon-rom-to-wasm/src/runtime/timers.ts
 var PRESCALER = [1, 64, 256, 1024];
 var IRQ_TIMER = [1 << 3, 1 << 4, 1 << 5, 1 << 6];
 var GbaTimers = class {
@@ -5324,7 +5324,7 @@ var GbaTimers = class {
   }
 };
 
-// src/runtime/interrupts.ts
+// gba-pokemon-rom-to-wasm/src/runtime/interrupts.ts
 var GbaInterrupts = class {
   io;
   cpu;
@@ -5389,7 +5389,7 @@ var GbaInterrupts = class {
   }
 };
 
-// src/runtime/flash.ts
+// gba-pokemon-rom-to-wasm/src/runtime/flash.ts
 var FLASH_SIZE = 131072;
 var BANK_SIZE = 65536;
 var SECTOR_SIZE = 4096;
@@ -5516,7 +5516,7 @@ var GbaFlash = class {
   }
 };
 
-// src/runtime/rtc.ts
+// gba-pokemon-rom-to-wasm/src/runtime/rtc.ts
 var Pin = { SCK: 1, SIO: 2, CS: 4 };
 var CMD_STATUS = 1;
 var CMD_DATETIME = 2;
@@ -5751,10 +5751,11 @@ var GbaRtc = class {
   }
 };
 
-// src/runtime/audio.ts
+// gba-pokemon-rom-to-wasm/src/runtime/audio.ts
 var CPU_HZ = 16777216;
 var OUT_HZ = 44100;
-var FIFO_CAP = 64;
+var FIFO_CAP = 32;
+var FRAME_SEQ_PERIOD = 32768;
 var PcmFifo = class {
   q = [];
   current = 0;
@@ -5784,12 +5785,234 @@ var PcmFifo = class {
     return this.q.length;
   }
 };
+var DUTY_TABLE = [
+  [0, 0, 0, 0, 0, 0, 0, 1],
+  // 12.5%
+  [1, 0, 0, 0, 0, 0, 0, 1],
+  // 25%
+  [1, 0, 0, 0, 0, 1, 1, 1],
+  // 50%
+  [0, 1, 1, 1, 1, 1, 1, 0]
+  // 75%
+];
+var SquareChannel = class {
+  enabled = false;
+  duty = 0;
+  dutyStep = 0;
+  freq = 0;
+  // 11-bit
+  timer = 0;
+  // cycles until next duty step
+  lengthCounter = 0;
+  lengthEnable = false;
+  envVolume = 0;
+  // current 0-15
+  envInitial = 0;
+  envDir = 0;
+  // 1 = increase
+  envPeriod = 0;
+  envTimer = 0;
+  // sweep (ch1 only)
+  hasSweep = false;
+  sweepShift = 0;
+  sweepDir = 0;
+  // 1 = decrease
+  sweepTime = 0;
+  sweepTimer = 0;
+  sweepShadow = 0;
+  sweepEnabled = false;
+  period() {
+    return (2048 - this.freq) * 16;
+  }
+  trigger() {
+    this.enabled = true;
+    if (this.lengthCounter === 0) this.lengthCounter = 64;
+    this.timer = this.period();
+    this.envVolume = this.envInitial;
+    this.envTimer = this.envPeriod;
+    if (this.hasSweep) {
+      this.sweepShadow = this.freq;
+      this.sweepTimer = this.sweepTime || 8;
+      this.sweepEnabled = this.sweepTime > 0 || this.sweepShift > 0;
+      if (this.sweepShift > 0 && this.sweepCalc() > 2047) this.enabled = false;
+    }
+    if (this.envInitial === 0 && this.envDir === 0) this.enabled = false;
+  }
+  sweepCalc() {
+    const d = this.sweepShadow >> this.sweepShift;
+    return this.sweepDir ? this.sweepShadow - d : this.sweepShadow + d;
+  }
+  clockSweep() {
+    if (!this.hasSweep || !this.sweepEnabled || !this.enabled) return;
+    if (--this.sweepTimer > 0) return;
+    this.sweepTimer = this.sweepTime || 8;
+    if (this.sweepTime === 0) return;
+    const next = this.sweepCalc();
+    if (next > 2047) {
+      this.enabled = false;
+      return;
+    }
+    if (this.sweepShift > 0) {
+      this.sweepShadow = next & 2047;
+      this.freq = this.sweepShadow;
+      if (this.sweepCalc() > 2047) this.enabled = false;
+    }
+  }
+  clockLength() {
+    if (this.lengthEnable && this.lengthCounter > 0 && --this.lengthCounter === 0) this.enabled = false;
+  }
+  clockEnvelope() {
+    if (!this.enabled || this.envPeriod === 0) return;
+    if (--this.envTimer > 0) return;
+    this.envTimer = this.envPeriod;
+    if (this.envDir && this.envVolume < 15) this.envVolume++;
+    else if (!this.envDir && this.envVolume > 0) this.envVolume--;
+  }
+  advance(cycles) {
+    if (!this.enabled) return;
+    const p = this.period();
+    if (p <= 0) return;
+    this.timer -= cycles;
+    while (this.timer <= 0) {
+      this.timer += p;
+      this.dutyStep = this.dutyStep + 1 & 7;
+    }
+  }
+  output() {
+    if (!this.enabled) return 0;
+    const bit = DUTY_TABLE[this.duty][this.dutyStep];
+    return bit ? this.envVolume / 15 : -(this.envVolume / 15);
+  }
+};
+var WaveChannel = class {
+  enabled = false;
+  playback = false;
+  // SOUND3CNT_L bit7
+  dimension = false;
+  // 64-sample mode
+  bank = 0;
+  // playing bank
+  freq = 0;
+  timer = 0;
+  pos = 0;
+  // sample position 0..31 (or 0..63)
+  lengthCounter = 0;
+  lengthEnable = false;
+  volumeCode = 0;
+  // 0=0%,1=100%,2=50%,3=25%
+  force75 = false;
+  ram = [new Uint8Array(16), new Uint8Array(16)];
+  sample = 0;
+  period() {
+    return (2048 - this.freq) * 8;
+  }
+  trigger() {
+    if (!this.playback) {
+      this.enabled = false;
+      return;
+    }
+    this.enabled = true;
+    if (this.lengthCounter === 0) this.lengthCounter = 256;
+    this.timer = this.period();
+    this.pos = 0;
+  }
+  clockLength() {
+    if (this.lengthEnable && this.lengthCounter > 0 && --this.lengthCounter === 0) this.enabled = false;
+  }
+  advance(cycles) {
+    if (!this.enabled || !this.playback) return;
+    const p = this.period();
+    if (p <= 0) return;
+    this.timer -= cycles;
+    while (this.timer <= 0) {
+      this.timer += p;
+      const len = this.dimension ? 64 : 32;
+      this.pos = (this.pos + 1) % len;
+      const bankIdx = this.dimension ? (this.pos >> 5) + this.bank & 1 : this.bank;
+      const idx = this.pos & 31;
+      const byte = this.ram[bankIdx][idx >> 1];
+      this.sample = idx & 1 ? byte & 15 : byte >> 4;
+    }
+  }
+  output() {
+    if (!this.enabled || !this.playback) return 0;
+    let v = this.sample / 15;
+    let scale;
+    if (this.force75) scale = 0.75;
+    else scale = this.volumeCode === 0 ? 0 : this.volumeCode === 1 ? 1 : this.volumeCode === 2 ? 0.5 : 0.25;
+    return (v * 2 - 1) * scale;
+  }
+};
+var NoiseChannel = class {
+  enabled = false;
+  lengthCounter = 0;
+  lengthEnable = false;
+  envVolume = 0;
+  envInitial = 0;
+  envDir = 0;
+  envPeriod = 0;
+  envTimer = 0;
+  shift = 0;
+  width7 = false;
+  divisor = 0;
+  timer = 0;
+  lfsr = 32767;
+  period() {
+    return (this.divisor === 0 ? 32 : this.divisor * 64) << this.shift;
+  }
+  trigger() {
+    this.enabled = true;
+    if (this.lengthCounter === 0) this.lengthCounter = 64;
+    this.timer = this.period();
+    this.envVolume = this.envInitial;
+    this.envTimer = this.envPeriod;
+    this.lfsr = 32767;
+    if (this.envInitial === 0 && this.envDir === 0) this.enabled = false;
+  }
+  clockLength() {
+    if (this.lengthEnable && this.lengthCounter > 0 && --this.lengthCounter === 0) this.enabled = false;
+  }
+  clockEnvelope() {
+    if (!this.enabled || this.envPeriod === 0) return;
+    if (--this.envTimer > 0) return;
+    this.envTimer = this.envPeriod;
+    if (this.envDir && this.envVolume < 15) this.envVolume++;
+    else if (!this.envDir && this.envVolume > 0) this.envVolume--;
+  }
+  advance(cycles) {
+    if (!this.enabled) return;
+    const p = this.period();
+    if (p <= 0) return;
+    this.timer -= cycles;
+    let steps = 0;
+    while (this.timer <= 0 && steps < 64) {
+      this.timer += p;
+      const xor = (this.lfsr ^ this.lfsr >> 1) & 1;
+      this.lfsr = this.lfsr >> 1 | xor << 14;
+      if (this.width7) this.lfsr = this.lfsr & ~64 | xor << 6;
+      steps++;
+    }
+    if (steps >= 64 && this.timer <= 0) this.timer = p;
+  }
+  output() {
+    if (!this.enabled) return 0;
+    return this.lfsr & 1 ? -(this.envVolume / 15) : this.envVolume / 15;
+  }
+};
 var GbaAudio = class {
   io;
   fifoA = new PcmFifo();
   fifoB = new PcmFifo();
   left = 0;
+  // Direct Sound contribution
   right = 0;
+  // PSG block
+  ch1 = new SquareChannel();
+  ch2 = new SquareChannel();
+  ch3 = new WaveChannel();
+  ch4 = new NoiseChannel();
+  frameSeqAcc = 0;
+  frameSeqStep = 0;
   /**
    * Effective output sample rate. Nominally OUT_HZ, but the frontend nudges it ±2% based on its
    * audio-queue depth (dynamic rate control). The producer (emulated time) and the consumer
@@ -5802,10 +6025,10 @@ var GbaAudio = class {
   outRead = 0;
   // index into output; avoids O(n) splice/shift on every drain
   sampleAcc = 0;
-  lastCycles = 0;
   maxBufferedSamples = OUT_HZ * 2;
   constructor(io) {
     this.io = io;
+    this.ch1.hasSweep = true;
   }
   /** Handle byte writes to FIFO_A/B IO addresses. DMA writes 32-bit, which arrives as 4 byte writes. */
   writeFifo8(off, value) {
@@ -5825,6 +6048,89 @@ var GbaAudio = class {
     if (h & 2048) this.fifoA.reset();
     if (h & 32768) this.fifoB.reset();
   }
+  /** IO write side effect for the PSG register block 0x60-0x7F. */
+  onPsgWrite(wordOff, v) {
+    switch (wordOff) {
+      case 96: {
+        this.ch1.sweepShift = v & 7;
+        this.ch1.sweepDir = v >> 3 & 1;
+        this.ch1.sweepTime = v >> 4 & 7;
+        break;
+      }
+      case 98: {
+        this.ch1.lengthCounter = 64 - (v & 63);
+        this.ch1.duty = v >> 6 & 3;
+        this.ch1.envPeriod = v >> 8 & 7;
+        this.ch1.envDir = v >> 11 & 1;
+        this.ch1.envInitial = v >> 12 & 15;
+        if (this.ch1.envInitial === 0 && this.ch1.envDir === 0) this.ch1.enabled = false;
+        break;
+      }
+      case 100: {
+        this.ch1.freq = v & 2047;
+        this.ch1.lengthEnable = (v & 16384) !== 0;
+        if (v & 32768) this.ch1.trigger();
+        break;
+      }
+      case 104: {
+        this.ch2.lengthCounter = 64 - (v & 63);
+        this.ch2.duty = v >> 6 & 3;
+        this.ch2.envPeriod = v >> 8 & 7;
+        this.ch2.envDir = v >> 11 & 1;
+        this.ch2.envInitial = v >> 12 & 15;
+        if (this.ch2.envInitial === 0 && this.ch2.envDir === 0) this.ch2.enabled = false;
+        break;
+      }
+      case 108: {
+        this.ch2.freq = v & 2047;
+        this.ch2.lengthEnable = (v & 16384) !== 0;
+        if (v & 32768) this.ch2.trigger();
+        break;
+      }
+      case 112: {
+        this.ch3.dimension = (v & 32) !== 0;
+        this.ch3.bank = v >> 6 & 1;
+        this.ch3.playback = (v & 128) !== 0;
+        if (!this.ch3.playback) this.ch3.enabled = false;
+        break;
+      }
+      case 114: {
+        this.ch3.lengthCounter = 256 - (v & 255);
+        this.ch3.volumeCode = v >> 13 & 3;
+        this.ch3.force75 = (v & 32768) !== 0;
+        break;
+      }
+      case 116: {
+        this.ch3.freq = v & 2047;
+        this.ch3.lengthEnable = (v & 16384) !== 0;
+        if (v & 32768) this.ch3.trigger();
+        break;
+      }
+      case 120: {
+        this.ch4.lengthCounter = 64 - (v & 63);
+        this.ch4.envPeriod = v >> 8 & 7;
+        this.ch4.envDir = v >> 11 & 1;
+        this.ch4.envInitial = v >> 12 & 15;
+        if (this.ch4.envInitial === 0 && this.ch4.envDir === 0) this.ch4.enabled = false;
+        break;
+      }
+      case 124: {
+        this.ch4.divisor = v & 7;
+        this.ch4.width7 = (v & 8) !== 0;
+        this.ch4.shift = v >> 4 & 15;
+        this.ch4.lengthEnable = (v & 16384) !== 0;
+        if (v & 32768) this.ch4.trigger();
+        break;
+      }
+    }
+  }
+  /** Wave RAM write (0x90-0x9F): CPU accesses the bank NOT currently selected for playback. */
+  onWaveRamWrite(wordOff, v) {
+    const idx = wordOff - 144 & 15;
+    const bank = this.ch3.bank ^ 1;
+    this.ch3.ram[bank][idx] = v & 255;
+    this.ch3.ram[bank][idx + 1] = v >> 8 & 255;
+  }
   /** Timer overflow clocks Direct Sound FIFO samples. */
   onTimerOverflow(timer) {
     const h = this.io.get16(130);
@@ -5843,13 +6149,59 @@ var GbaAudio = class {
   consumeDmaRequest(channel) {
     return channel === 1 ? this.fifoA.consumeDmaRequest() : this.fifoB.consumeDmaRequest();
   }
+  clockFrameSequencer() {
+    const s = this.frameSeqStep;
+    if ((s & 1) === 0) {
+      this.ch1.clockLength();
+      this.ch2.clockLength();
+      this.ch3.clockLength();
+      this.ch4.clockLength();
+    }
+    if (s === 2 || s === 6) this.ch1.clockSweep();
+    if (s === 7) {
+      this.ch1.clockEnvelope();
+      this.ch2.clockEnvelope();
+      this.ch4.clockEnvelope();
+    }
+    this.frameSeqStep = s + 1 & 7;
+  }
+  /** Mix the four PSG channels for the current instant. Returns [left, right] in ~[-1,1]. */
+  psgMix() {
+    const cntL = this.io.get16(128);
+    const cntH = this.io.get16(130);
+    const psgRatio = (cntH & 3) === 0 ? 0.25 : (cntH & 3) === 1 ? 0.5 : 1;
+    const rVol = ((cntL & 7) + 1) / 8;
+    const lVol = ((cntL >> 4 & 7) + 1) / 8;
+    const o1 = this.ch1.output(), o2 = this.ch2.output(), o3 = this.ch3.output(), o4 = this.ch4.output();
+    let l = 0, r = 0;
+    if (cntL & 256) r += o1;
+    if (cntL & 4096) l += o1;
+    if (cntL & 512) r += o2;
+    if (cntL & 8192) l += o2;
+    if (cntL & 1024) r += o3;
+    if (cntL & 16384) l += o3;
+    if (cntL & 2048) r += o4;
+    if (cntL & 32768) l += o4;
+    const k = 0.25 * psgRatio * 0.5;
+    return [l * lVol * k, r * rVol * k];
+  }
   /** Advance audio output resampling by CPU cycles. Call once per CPU/hardware step. */
   step(cycles) {
     if ((this.io.get16(132) & 128) === 0) return;
+    this.ch1.advance(cycles);
+    this.ch2.advance(cycles);
+    this.ch3.advance(cycles);
+    this.ch4.advance(cycles);
+    this.frameSeqAcc += cycles;
+    while (this.frameSeqAcc >= FRAME_SEQ_PERIOD) {
+      this.frameSeqAcc -= FRAME_SEQ_PERIOD;
+      this.clockFrameSequencer();
+    }
     this.sampleAcc += cycles * this.outHz;
     while (this.sampleAcc >= CPU_HZ) {
       this.sampleAcc -= CPU_HZ;
-      let l = this.left, r = this.right;
+      const [pl, pr] = this.psgMix();
+      let l = this.left + pl, r = this.right + pr;
       l = Math.max(-1, Math.min(1, l));
       r = Math.max(-1, Math.min(1, r));
       this.output.push(l, r);
@@ -5879,13 +6231,215 @@ var GbaAudio = class {
     return this.output.length - this.outRead >> 1;
   }
   serializeState() {
-    return { a: this.fifoA.q, b: this.fifoB.q, left: this.left, right: this.right };
+    return {
+      a: this.fifoA.q,
+      b: this.fifoB.q,
+      left: this.left,
+      right: this.right,
+      wave0: [...this.ch3.ram[0]],
+      wave1: [...this.ch3.ram[1]]
+    };
   }
-  loadState(_s) {
+  loadState(s) {
+    if (!s) return;
+    if (Array.isArray(s.wave0)) this.ch3.ram[0].set(s.wave0);
+    if (Array.isArray(s.wave1)) this.ch3.ram[1].set(s.wave1);
   }
 };
 
-// src/runtime/machine.ts
+// gba-pokemon-rom-to-wasm/src/runtime/sio.ts
+var SIO_REG = {
+  SIODATA32_L: 288,
+  SIODATA32_H: 290,
+  SIOMULTI0: 288,
+  SIOMULTI1: 290,
+  SIOMULTI2: 292,
+  SIOMULTI3: 294,
+  SIOCNT: 296,
+  SIODATA8: 298,
+  RCNT: 308,
+  JOYCNT: 320,
+  JOY_RECV_L: 336,
+  JOY_RECV_H: 338,
+  JOY_TRANS_L: 340,
+  JOY_TRANS_H: 342,
+  JOYSTAT: 344
+};
+var IRQ_SERIAL = 128;
+var CPU_HZ2 = 16777216;
+var MULTI_BAUD = [9600, 38400, 57600, 115200];
+var GbaSio = class {
+  io;
+  requestIrq = () => {
+  };
+  transport = null;
+  /** Cycles remaining on an in-flight transfer; 0 = idle. */
+  busyCycles = 0;
+  pendingKind = null;
+  /** Telemetry. */
+  transfersStarted = 0;
+  transfersCompleted = 0;
+  constructor(io) {
+    this.io = io;
+    io.set16(SIO_REG.RCNT, 32768);
+  }
+  mode() {
+    const rcnt = this.io.get16(SIO_REG.RCNT);
+    if (rcnt & 32768) return rcnt & 16384 ? "joybus" : "general";
+    const cnt = this.io.get16(SIO_REG.SIOCNT);
+    if (cnt & 8192) return cnt & 4096 ? "uart" : "multi";
+    return cnt & 4096 ? "normal32" : "normal8";
+  }
+  /** IO write side effect for SIOCNT (0x128). Called from the machine's writeHook. */
+  onSiocntWrite() {
+    this.reflectNormalSi();
+    const cnt = this.io.get16(SIO_REG.SIOCNT);
+    const m = this.mode();
+    if (m === "multi") {
+      this.reflectMultiStatus();
+      if (cnt & 128) this.startMulti();
+      return;
+    }
+    if (m === "normal8" || m === "normal32") {
+      if (cnt & 128) this.startNormal(m === "normal32" ? 32 : 8);
+      return;
+    }
+    if (m === "uart" && cnt & 128) {
+      this.io.set16(SIO_REG.SIOCNT, cnt & ~128);
+    }
+  }
+  /** IO write side effect for RCNT (0x134). Mode switches cancel in-flight transfers. */
+  onRcntWrite() {
+    this.reflectNormalSi();
+    const m = this.mode();
+    if (m === "general" || m === "joybus") {
+      this.busyCycles = 0;
+      this.pendingKind = null;
+    }
+    if (m === "multi") this.reflectMultiStatus();
+  }
+  /**
+   * Normal mode: SIOCNT bit2 is the read-only SI input line. With NOTHING attached the line
+   * is pulled HIGH — this is exactly how the FRLG/Emerald RFU (STWI) driver detects "no
+   * wireless adapter" and errors out of rfu_waitREQComplete() instead of retrying forever.
+   * With a live transport the partner drives SI low (ready).
+   */
+  reflectNormalSi() {
+    const m = this.mode();
+    if (m !== "normal8" && m !== "normal32") return;
+    let cnt = this.io.get16(SIO_REG.SIOCNT);
+    if (this.transport?.connected) cnt &= ~4;
+    else cnt |= 4;
+    this.io.set16(SIO_REG.SIOCNT, cnt);
+  }
+  reflectMultiStatus() {
+    let cnt = this.io.get16(SIO_REG.SIOCNT);
+    const t = this.transport;
+    if (t?.connected) {
+      cnt = cnt & ~12 | 8 | (t.id > 0 ? 4 : 0);
+      cnt = cnt & ~48 | (t.id & 3) << 4;
+    } else {
+      cnt &= ~60;
+    }
+    this.io.set16(SIO_REG.SIOCNT, cnt);
+  }
+  startNormal(bits) {
+    const cnt = this.io.get16(SIO_REG.SIOCNT);
+    const internalClock = (cnt & 1) !== 0;
+    this.transfersStarted++;
+    if (!internalClock && !this.transport?.connected) {
+      return;
+    }
+    const cyclesPerBit = cnt & 2 ? 8 : 64;
+    this.busyCycles = bits * cyclesPerBit;
+    this.pendingKind = bits === 32 ? "normal32" : "normal8";
+  }
+  startMulti() {
+    const cnt = this.io.get16(SIO_REG.SIOCNT);
+    const isParent = !this.transport?.connected || this.transport.id === 0;
+    this.transfersStarted++;
+    if (!isParent) {
+      this.io.set16(SIO_REG.SIOCNT, cnt & ~128);
+      return;
+    }
+    const baud = MULTI_BAUD[cnt & 3];
+    const gbas = this.transport?.connected ? 4 : 1;
+    this.busyCycles = Math.max(1, Math.round(CPU_HZ2 / baud * (16 + 2) * gbas));
+    this.pendingKind = "multi";
+  }
+  /** Advance the in-flight transfer; deliver results at completion. */
+  step(cycles) {
+    if (this.busyCycles <= 0) return;
+    this.busyCycles -= cycles;
+    if (this.busyCycles > 0) return;
+    this.busyCycles = 0;
+    const kind = this.pendingKind;
+    this.pendingKind = null;
+    if (kind === "normal8" || kind === "normal32") this.completeNormal(kind === "normal32" ? 32 : 8);
+    else if (kind === "multi") this.completeMulti();
+  }
+  completeNormal(bits) {
+    let cnt = this.io.get16(SIO_REG.SIOCNT);
+    let received = null;
+    if (this.transport?.connected) {
+      const sent = bits === 32 ? (this.io.get16(SIO_REG.SIODATA32_L) | this.io.get16(SIO_REG.SIODATA32_H) << 16) >>> 0 : this.io.get16(SIO_REG.SIODATA8) & 255;
+      received = this.transport.exchangeNormal(sent, bits);
+    }
+    if (received === null || received === void 0) received = bits === 32 ? 4294967295 : 255;
+    if (bits === 32) {
+      this.io.set16(SIO_REG.SIODATA32_L, received & 65535);
+      this.io.set16(SIO_REG.SIODATA32_H, received >>> 16 & 65535);
+    } else {
+      this.io.set16(SIO_REG.SIODATA8, received & 255);
+    }
+    cnt &= ~128;
+    this.io.set16(SIO_REG.SIOCNT, cnt);
+    this.reflectNormalSi();
+    this.transfersCompleted++;
+    if (cnt & 16384) this.requestIrq(IRQ_SERIAL);
+  }
+  completeMulti() {
+    let cnt = this.io.get16(SIO_REG.SIOCNT);
+    const sent = this.io.get16(SIO_REG.SIODATA8);
+    let slots = null;
+    if (this.transport?.connected) slots = this.transport.exchangeMulti(sent);
+    if (!slots) slots = [sent & 65535, 65535, 65535, 65535];
+    this.io.set16(SIO_REG.SIOMULTI0, slots[0]);
+    this.io.set16(SIO_REG.SIOMULTI1, slots[1]);
+    this.io.set16(SIO_REG.SIOMULTI2, slots[2]);
+    this.io.set16(SIO_REG.SIOMULTI3, slots[3]);
+    cnt &= ~128;
+    this.io.set16(SIO_REG.SIOCNT, cnt);
+    this.reflectMultiStatus();
+    this.transfersCompleted++;
+    if (cnt & 16384) this.requestIrq(IRQ_SERIAL);
+  }
+  /** Used by LocalLinkHub to deliver a parent-initiated multiplayer round to a child. */
+  deliverMultiSlots(slots) {
+    this.io.set16(SIO_REG.SIOMULTI0, slots[0]);
+    this.io.set16(SIO_REG.SIOMULTI1, slots[1]);
+    this.io.set16(SIO_REG.SIOMULTI2, slots[2]);
+    this.io.set16(SIO_REG.SIOMULTI3, slots[3]);
+    this.reflectMultiStatus();
+    const cnt = this.io.get16(SIO_REG.SIOCNT);
+    this.transfersCompleted++;
+    if (cnt & 16384) this.requestIrq(IRQ_SERIAL);
+  }
+  /** Child's current SIOMLT_SEND word (what it would put on the wire this round). */
+  currentSendWord() {
+    return this.io.get16(SIO_REG.SIODATA8) & 65535;
+  }
+  serializeState() {
+    return { busyCycles: this.busyCycles, pendingKind: this.pendingKind };
+  }
+  loadState(s) {
+    if (!s) return;
+    this.busyCycles = s.busyCycles | 0;
+    this.pendingKind = s.pendingKind ?? null;
+  }
+};
+
+// gba-pokemon-rom-to-wasm/src/runtime/machine.ts
 var CYCLES_PER_FRAME = 1232 * 228;
 var GbaMachine = class {
   mem = new GbaMemory();
@@ -5905,6 +6459,7 @@ var GbaMachine = class {
   flash;
   rtc;
   audio;
+  sio;
   header;
   instrCount = 0;
   frameCount = 0;
@@ -5933,6 +6488,8 @@ var GbaMachine = class {
     this.timers = new GbaTimers(this.io);
     this.audio = new GbaAudio(this.io);
     this.irq = new GbaInterrupts(this.io, this.cpu);
+    this.sio = new GbaSio(this.io);
+    this.sio.requestIrq = (b) => this.irq.request(b);
     this.irq.canDeliver = () => this._irqDepth < 4 && !(this.cpu.st.r[15] === 24 && this.cpu.st.mode === Mode.IRQ);
     this.irq.biosIfOr = (bits) => {
       const cur = this.mem.read16(50364408) & 65535;
@@ -5992,11 +6549,20 @@ var GbaMachine = class {
         case 130:
           this.audio.onSoundCntHWrite();
           break;
+        case 296:
+          this.sio.onSiocntWrite();
+          break;
+        case 308:
+          this.sio.onRcntWrite();
+          break;
       }
+      if (off >= 96 && off <= 127) this.audio.onPsgWrite(off, _val);
+      else if (off >= 144 && off <= 159) this.audio.onWaveRamWrite(off, _val);
     };
     this.io.haltHook = () => {
       this.cpu.halted = true;
     };
+    this.io.set16(REG.DISPCNT, 128);
     this.io.set16(REG.KEYINPUT, this.keyState);
     this.cpu.swiHandler = makeBiosHle({
       onIntrWait: () => {
@@ -6150,6 +6716,7 @@ var GbaMachine = class {
       this.ppu.step(hleCycles);
       this.timers.step(hleCycles);
       this.audio.step(hleCycles);
+      this.sio.step(hleCycles);
       if (!this.cpu.halted) {
         this.irq.poll();
         this.serviceIrqDispatch();
@@ -6166,6 +6733,7 @@ var GbaMachine = class {
         this.ppu.step(n);
         this.timers.step(n);
         this.audio.step(n);
+        this.sio.step(n);
         if (!this.cpu.halted) {
           this.irq.poll();
           this.serviceIrqDispatch();
@@ -6179,6 +6747,7 @@ var GbaMachine = class {
     this.ppu.step(c);
     this.timers.step(c);
     this.audio.step(c);
+    this.sio.step(c);
     if (!this.cpu.halted) {
       this.irq.poll();
       this.serviceIrqDispatch();
@@ -6205,6 +6774,7 @@ var GbaMachine = class {
         this.ppu.step(c2);
         this.timers.step(c2);
         this.audio.step(c2);
+        this.sio.step(c2);
         this.irq.poll();
         if (!this.cpu.halted) this.serviceIrqDispatch();
         cyclesThisFrame += c2;
@@ -6238,7 +6808,7 @@ var GbaMachine = class {
 };
 var BIOS_IRQ_RETURN = 316;
 
-// src/browser/disasm.ts
+// gba-pokemon-rom-to-wasm/src/browser/disasm.ts
 var CC = ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "", "nv"];
 var DP = ["and", "eor", "sub", "rsb", "add", "adc", "sbc", "rsc", "tst", "teq", "cmp", "cmn", "orr", "mov", "bic", "mvn"];
 var SH = ["lsl", "lsr", "asr", "ror"];
@@ -6486,7 +7056,7 @@ function thumbMnemonic(i) {
   return (i >>> 11 & 31) === 28 ? "b" : "bl";
 }
 
-// src/browser/debug.ts
+// gba-pokemon-rom-to-wasm/src/browser/debug.ts
 var MODES = {
   16: "usr",
   17: "fiq",
@@ -6971,7 +7541,7 @@ var DebugPanel = class {
   }
 };
 
-// src/browser/main.ts
+// gba-pokemon-rom-to-wasm/src/browser/main.ts
 var SCREEN_W2 = 240;
 var SCREEN_H2 = 160;
 var KEY = {
