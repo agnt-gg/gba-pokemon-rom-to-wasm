@@ -1,4 +1,4 @@
-// gba-pokemon-rom-to-wasm/src/cpu/arm_state.ts
+// src/cpu/arm_state.ts
 var Mode = {
   USR: 16,
   FIQ: 17,
@@ -217,7 +217,7 @@ var ArmState = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/cpu/barrel.ts
+// src/cpu/barrel.ts
 var ShiftType = { LSL: 0, LSR: 1, ASR: 2, ROR: 3 };
 function shiftImm(type, value, amount, carryIn) {
   value = value | 0;
@@ -272,7 +272,7 @@ function shiftReg(type, value, amount, carryIn) {
   }
 }
 
-// gba-pokemon-rom-to-wasm/src/cpu/thumb_core.ts
+// src/cpu/thumb_core.ts
 function thumbStep(cpu) {
   const st = cpu.st;
   const pc = st.r[15] >>> 0;
@@ -812,7 +812,7 @@ function ldrWord(cpu, addr) {
   return rot === 0 ? aligned : (aligned >>> rot | aligned << 32 - rot) >>> 0;
 }
 
-// gba-pokemon-rom-to-wasm/src/cpu/arm_core.ts
+// src/cpu/arm_core.ts
 var ArmCore = class {
   st = new ArmState();
   bus;
@@ -1438,7 +1438,7 @@ var ArmCore = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/recompiler/wasm_encoder.ts
+// src/recompiler/wasm_encoder.ts
 var I32 = 127;
 var I64 = 126;
 var VOID = 64;
@@ -1736,7 +1736,7 @@ var CodeBuilder = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/recompiler/abi.ts
+// src/recompiler/abi.ts
 var REG_BASE = 0;
 var OFF_CPSR = 64;
 var OFF_CYCLES = 68;
@@ -1757,7 +1757,7 @@ var HOST = {
 };
 var HOST_IMPORT_ORDER = ["read8", "read16", "read32", "write8", "write16", "write32"];
 
-// gba-pokemon-rom-to-wasm/src/recompiler/arm_lifter.ts
+// src/recompiler/arm_lifter.ts
 var L_A = 0;
 var L_B = 1;
 var L_RES = 2;
@@ -2515,7 +2515,7 @@ function liftBlockXfer(cb, instr, pcPlus12) {
   return L ? { status: "ok", mayLoad: true } : { status: "ok", mayStore: true };
 }
 
-// gba-pokemon-rom-to-wasm/src/recompiler/thumb_lifter.ts
+// src/recompiler/thumb_lifter.ts
 var L_A2 = 0;
 var L_B2 = 1;
 var L_RES2 = 2;
@@ -3337,7 +3337,7 @@ function emitCond(cb, cond) {
   }
 }
 
-// gba-pokemon-rom-to-wasm/src/recompiler/recompiler.ts
+// src/recompiler/recompiler.ts
 var tHostRead = { params: [I32], results: [I32] };
 var tHostWrite = { params: [I32, I32], results: [] };
 var tBlock = { params: [], results: [I32] };
@@ -3842,7 +3842,7 @@ var Recompiler = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/memory.ts
+// src/runtime/memory.ts
 var GbaMemory = class {
   bios = new Uint8Array(16384);
   ewram = new Uint8Array(262144);
@@ -4035,7 +4035,7 @@ var GbaMemory = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/io.ts
+// src/runtime/io.ts
 var REG = {
   DISPCNT: 0,
   DISPSTAT: 4,
@@ -4195,7 +4195,7 @@ var GbaIo = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/bios_hle.ts
+// src/runtime/bios_hle.ts
 function s16(v) {
   v &= 65535;
   return v & 32768 ? v - 65536 : v;
@@ -4543,7 +4543,7 @@ function bitUnpack(cpu, src, dst, info) {
   if (outBits > 0) bus.write32(dst, outBuf >>> 0);
 }
 
-// gba-pokemon-rom-to-wasm/src/runtime/header.ts
+// src/runtime/header.ts
 function parseHeader(rom) {
   const ascii = (a, b) => {
     let s = "";
@@ -4568,7 +4568,7 @@ function parseHeader(rom) {
   };
 }
 
-// gba-pokemon-rom-to-wasm/src/runtime/ppu.ts
+// src/runtime/ppu.ts
 var SCREEN_W = 240;
 var SCREEN_H = 160;
 var CYCLES_PER_SCANLINE = 1232;
@@ -5096,7 +5096,7 @@ function spriteSize(shape, size) {
   return (table[shape] || table[0])[size];
 }
 
-// gba-pokemon-rom-to-wasm/src/runtime/dma.ts
+// src/runtime/dma.ts
 var IRQ_DMA = [1 << 8, 1 << 9, 1 << 10, 1 << 11];
 var GbaDma = class {
   mem;
@@ -5197,7 +5197,7 @@ var GbaDma = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/timers.ts
+// src/runtime/timers.ts
 var PRESCALER = [1, 64, 256, 1024];
 var IRQ_TIMER = [1 << 3, 1 << 4, 1 << 5, 1 << 6];
 var GbaTimers = class {
@@ -5327,7 +5327,7 @@ var GbaTimers = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/interrupts.ts
+// src/runtime/interrupts.ts
 var GbaInterrupts = class {
   io;
   cpu;
@@ -5392,7 +5392,7 @@ var GbaInterrupts = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/flash.ts
+// src/runtime/flash.ts
 var FLASH_SIZE = 131072;
 var BANK_SIZE = 65536;
 var SECTOR_SIZE = 4096;
@@ -5519,7 +5519,7 @@ var GbaFlash = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/rtc.ts
+// src/runtime/rtc.ts
 var Pin = { SCK: 1, SIO: 2, CS: 4 };
 var CMD_STATUS = 1;
 var CMD_DATETIME = 2;
@@ -5763,7 +5763,7 @@ var GbaRtc = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/audio.ts
+// src/runtime/audio.ts
 var CPU_HZ = 16777216;
 var OUT_HZ = 44100;
 var FIFO_CAP = 32;
@@ -6259,7 +6259,7 @@ var GbaAudio = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/sio.ts
+// src/runtime/sio.ts
 var SIO_REG = {
   SIODATA32_L: 288,
   SIODATA32_H: 290,
@@ -6451,7 +6451,7 @@ var GbaSio = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/runtime/machine.ts
+// src/runtime/machine.ts
 var CYCLES_PER_FRAME = 1232 * 228;
 var GbaMachine = class {
   mem = new GbaMemory();
@@ -6811,7 +6811,7 @@ var GbaMachine = class {
 };
 var BIOS_IRQ_RETURN = 316;
 
-// gba-pokemon-rom-to-wasm/src/browser/disasm.ts
+// src/browser/disasm.ts
 var CC = ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le", "", "nv"];
 var DP = ["and", "eor", "sub", "rsb", "add", "adc", "sbc", "rsc", "tst", "teq", "cmp", "cmn", "orr", "mov", "bic", "mvn"];
 var SH = ["lsl", "lsr", "asr", "ror"];
@@ -7059,7 +7059,7 @@ function thumbMnemonic(i) {
   return (i >>> 11 & 31) === 28 ? "b" : "bl";
 }
 
-// gba-pokemon-rom-to-wasm/src/browser/debug.ts
+// src/browser/debug.ts
 var MODES = {
   16: "usr",
   17: "fiq",
@@ -7544,7 +7544,7 @@ var DebugPanel = class {
   }
 };
 
-// gba-pokemon-rom-to-wasm/src/browser/main.ts
+// src/browser/main.ts
 var SCREEN_W2 = 240;
 var SCREEN_H2 = 160;
 var KEY = {

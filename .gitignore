@@ -54,3 +54,19 @@ tmp_*
 Thumbs.db
 .vscode/
 .idea/
+
+# Local dev archive of the pre-consolidation git history
+.git-localdev-archive/
+
+# Downloaded reference sources (pret decomps) used during debugging
+build/*.c
+build/*.s
+!build/arm.gba
+!build/thumb.gba
+
+# One-shot local session scripts (applied + documented in commit messages)
+tools/_patch_*
+tools/_skill_*
+tools/_fix_*
+tools/_tree_diff.cjs
+
